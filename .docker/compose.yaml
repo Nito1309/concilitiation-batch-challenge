@@ -1,0 +1,15 @@
+services:
+  cli:
+    build:
+      context: ./cli
+    volumes:
+      - ./../:/app
+      - $HOME/.aws:/root/.aws:ro
+    working_dir: /app
+    env_file:
+      - ${CLI_ENV_FILE:-floci.env}
+
+networks:
+  default:
+    name: conciliacion-batch
+    external: true
