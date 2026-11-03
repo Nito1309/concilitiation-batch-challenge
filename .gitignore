@@ -9,3 +9,6 @@ __pycache__/
 # JetBrains / PyCharm
 .idea/
 *.iml
+
+# Local run environment
+.env.local
