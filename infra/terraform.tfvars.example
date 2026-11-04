@@ -1,0 +1,19 @@
+# Template only — Terraform never loads this file (no *.tf suffix).
+# Copy it:  cp infra/terraform.tfvars.example infra/terraform.tfvars
+# Fill the 5 platform values from:
+#   terraform -chdir=bootstrap-floci output -json
+# terraform.tfvars is gitignored; this file stays placeholder-only.
+
+aws_region  = "us-east-1"
+project     = "conciliacion-batch"
+environment = "lab"
+
+bucket_name          = "conciliacion-batch-lab-<account-id>"
+vpc_id               = "<vpc-id>"
+subnet_ids           = ["<subnet-id-a>", "<subnet-id-b>"]
+db_security_group_id = "<sg-id>"
+db_secret_arn        = "<secret-arn>"
+db_endpoint          = "<host>:<port>"
+
+tags = { Owner = "candidate" }
+
