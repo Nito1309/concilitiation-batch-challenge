@@ -8,7 +8,7 @@ aws_region  = "us-east-1"
 project     = "conciliacion-batch"
 environment = "lab"
 
-bucket_name          = "conciliacion-batch-lab-<account-id>"
+bucket_name          = ""
 vpc_id               = "<vpc-id>"
 subnet_ids           = ["<subnet-id-a>", "<subnet-id-b>"]
 db_security_group_id = "<sg-id>"
