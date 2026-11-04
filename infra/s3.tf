@@ -53,9 +53,28 @@ resource "aws_s3_bucket_public_access_block" "data" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
+
+  rule {
+    id     = "raw-transition-standard-ia"
+    status = "Enabled"
+
+    filter {
+      prefix = "raw/"
+    }
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
+}
+
 # Output that will be migrated to outputs.tf later
 output "s3_bucket_name" {
   description = "Real name of the data bucket, after any derivation."
   value       = aws_s3_bucket.data.id
 }
+
 
