@@ -4,6 +4,7 @@
 *.tfstate.backup
 terraform.tfvars
 crash.log
+*override.tf*
 
 # Python
 __pycache__/
