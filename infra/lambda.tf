@@ -136,3 +136,12 @@ resource "aws_s3_bucket_notification" "data" {
   depends_on = [aws_lambda_permission.s3_notifier]
 }
 
+output "dispatcher_function_name" {
+  description = "Schedule target for 3.7 (its invoke permission is already pinned to it)."
+  value       = aws_lambda_function.dispatcher.function_name
+}
+
+output "notifier_function_name" {
+  description = "Function S3 calls for every object under inbox/."
+  value       = aws_lambda_function.notifier.function_name
+}
