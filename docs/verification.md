@@ -137,6 +137,101 @@ pins `darwin_arm64`, `linux_amd64` and `linux_arm64`; adding another platform is
 
 ---
 
+## 3.4 — IAM roles and policies (`infra/iam.tf`)
+
+### Apply
+
+```bash
+cd infra
+terraform fmt -check -recursive
+terraform validate
+terraform apply
+```
+
+```text
+Success! The configuration is valid.
+
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+```
+
+The five are `aws_iam_role.task`, `aws_iam_role.dispatcher`,
+`aws_iam_role_policy.task_exec_secret`, `aws_iam_role_policy.dispatcher` and
+`aws_iam_role_policy_attachment.dispatcher_logs`; the execution role and its first two policies
+came from the previous apply. A second `terraform plan` reports no changes, and the
+`aws_iam_policy_document` blocks add nothing to count: they render JSON locally and that JSON is
+stored on the policy referencing them.
+
+### Four roles, one per identity
+
+| Role | Assumed by | Granted |
+| --- | --- | --- |
+| `conciliacion-batch-lab-task-exec` | ECS agent, before the container starts | pull the image, write log streams, read the DB secret |
+| `conciliacion-batch-lab-task` | the app code inside the container | `s3:GetObject`/`PutObject` on the bucket objects, `s3:ListBucket` |
+| `conciliacion-batch-lab-dispatcher` | Lambda | `ecs:RunTask` on the app task definition, `iam:PassRole` for the task role only |
+| `conciliacion-batch-lab-notifier` | Lambda | `ses:SendEmail` as the verified sender identity |
+
+### Which policy sits on which role
+
+```bash
+for r in task-exec task dispatcher notifier; do
+  echo "-- $r"
+  aws --endpoint-url http://localhost:4566 iam list-role-policies \
+    --role-name conciliacion-batch-lab-$r --query PolicyNames --output text
+  aws --endpoint-url http://localhost:4566 iam list-attached-role-policies \
+    --role-name conciliacion-batch-lab-$r --query 'AttachedPolicies[].PolicyName' --output text
+done
+```
+
+```text
+-- task-exec
+task-exec-logs	task-exec-ecr	task-exec-secret
+-- task
+task-s3
+-- dispatcher
+dispatcher-ecs
+AWSLambdaBasicExecutionRole
+-- notifier
+notifier-ses
+AWSLambdaBasicExecutionRole
+```
+
+Inline policies are named `<role>-<concern>` so a single `get-role-policy` answers "what may this
+role do", one concern at a time. The two managed attachments are the same AWS policy: Lambda log
+permissions are not worth hand-writing.
+
+### Least privilege check
+
+```bash
+for r in task-exec task dispatcher notifier; do
+  for p in $(aws --endpoint-url http://localhost:4566 iam list-role-policies \
+      --role-name conciliacion-batch-lab-$r --query PolicyNames --output text); do
+    aws --endpoint-url http://localhost:4566 iam get-role-policy \
+      --role-name conciliacion-batch-lab-$r --policy-name "$p" \
+      --query PolicyDocument --output json
+  done
+done | grep -c '"Resource": "\*"'
+```
+
+```text
+1
+```
+
+One wildcard across the six inline policies: `ecr:GetAuthorizationToken`, which issues a registry
+token for the whole account and has no ARN form. Every other statement names exactly one
+repository, log group, secret, bucket, task definition or SES identity.
+
+### What this does not prove
+
+- **Nothing here is enforced.** Floci stores policies and accepts the API calls that follow, so a
+  misspelled action, a policy on the wrong role and a missing permission all read back fine. The
+  commands above prove shape, not authorization.
+- **No role has ever been assumed.** Nothing in the stack calls `sts:AssumeRole` yet: there is no
+  running task (3.5) and no deployed Lambda (3.8), so the trust policies are configuration only.
+- **The `iam:PassRole` condition is untested.** `iam:PassedToService` is evaluated when a service
+  hands a role to another service, which no local command does.
+
+---
+
 ## What Floci does not emulate
 
 Applies to this piece and grows as the other pieces land.
