@@ -44,6 +44,21 @@ resource "aws_lambda_function" "dispatcher" {
   memory_size = 256
   timeout     = 30
 
+  # Everything RunTask needs at call time. A Lambda only carries strings, so
+  # the subnet list travels as "a,b" and the handler splits it.
+  #
+  # TASK_DEFINITION is the family without a revision on purpose: RunTask then
+  # starts the latest ACTIVE revision, and a new image deployed in 3.5 is
+  # picked up without touching this function.
+  environment {
+    variables = {
+      CLUSTER_NAME    = aws_ecs_cluster.app.name
+      TASK_DEFINITION = aws_ecs_task_definition.app.family
+      SUBNETS         = join(",", var.subnet_ids)
+      SECURITY_GROUPS = aws_security_group.task.id
+    }
+  }
+
   tags = local.common_tags
 
   depends_on = [aws_cloudwatch_log_group.dispatcher]
