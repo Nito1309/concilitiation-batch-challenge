@@ -53,3 +53,20 @@ resource "aws_lambda_permission" "events_notifier" {
   source_arn    = aws_cloudwatch_event_rule.task_stopped.arn
 }
 
+# EventBridge invokes asynchronously, so an exception is not returned to anyone:
+# Lambda retries twice and then drops the event. This queue is what survives that
+# drop -- without it a crashing notifier is indistinguishable from a quiet day.
+resource "aws_sqs_queue" "notifier_dlq" {
+  name                      = "${local.name_prefix}-notifier-dlq"
+  message_retention_seconds = 1209600 # 14 days, same as the log groups
+  sqs_managed_sse_enabled   = true
+
+  # No redrive_policy here, deliberately. maxReceiveCount lives on a queue that a
+  # consumer reads, so that a consumer which keeps failing stops seeing the
+  # message; it is the setting that turns a work queue into a source for its own
+  # DLQ. This queue is already the destination -- Lambda writes, a human reads,
+  # and the message has been received at most once -- so a receive count would
+  # never reach its limit. The redrive would be a manual `start-message-move-task`
+  # after the bug is fixed, not a policy.
+}
+
