@@ -27,3 +27,33 @@ resource "aws_iam_role" "scheduler" {
   assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
 }
 
+# One function, one action. The condition is the confused-deputy guard: this
+# role only works for this schedule, not for any other schedule that manages to
+# assume it.
+#
+# The schedule ARN is built from local.dispatch_schedule_name rather than from
+# aws_scheduler_schedule.daily.arn, because the schedule's target already points
+# at this role and referencing it back would be a cycle. The 3.6 invoke
+# permission is pinned to the same string, so the two cannot drift apart.
+data "aws_iam_policy_document" "scheduler_invoke" {
+  statement {
+    sid       = "InvokeDispatcher"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.dispatcher.arn]
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:aws:scheduler:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.dispatch_schedule_name}"
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_invoke" {
+  name   = "scheduler-invoke"
+  role   = aws_iam_role.scheduler.name
+  policy = data.aws_iam_policy_document.scheduler_invoke.json
+}
+
