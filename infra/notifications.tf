@@ -34,3 +34,11 @@ resource "aws_cloudwatch_event_rule" "task_stopped" {
   })
 }
 
+resource "aws_cloudwatch_event_target" "notifier" {
+  rule = aws_cloudwatch_event_rule.task_stopped.name
+  arn  = aws_lambda_function.notifier.arn
+
+  # No `input` and no `input_transformer`: the notifier wants the event exactly
+  # as ECS wrote it, because stopCode, stoppedReason and exitCode are all in it.
+}
+
