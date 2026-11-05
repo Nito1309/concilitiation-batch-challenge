@@ -65,3 +65,17 @@ resource "aws_sqs_queue" "scheduler_dlq" {
   sqs_managed_sse_enabled   = true
 }
 
+data "aws_iam_policy_document" "scheduler_dlq" {
+  statement {
+    sid       = "DeadLetterWrites"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.scheduler_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_dlq" {
+  name   = "scheduler-dlq"
+  role   = aws_iam_role.scheduler.name
+  policy = data.aws_iam_policy_document.scheduler_dlq.json
+}
+
