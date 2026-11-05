@@ -79,3 +79,28 @@ resource "aws_iam_role_policy" "scheduler_dlq" {
   policy = data.aws_iam_policy_document.scheduler_dlq.json
 }
 
+resource "aws_scheduler_schedule" "daily" {
+  name        = local.dispatch_schedule_name
+  description = "Daily reconciliation run at 05:00 America/Mexico_City."
+
+  # Explicit because 3.6 pins the invoke permission to
+  # .../schedule/default/<name>. Any other group is a different ARN, and the
+  # invoke would be denied with nothing in the log pointing at the group.
+  group_name = "default"
+
+  schedule_expression          = "cron(0 5 * * ? *)"
+  schedule_expression_timezone = "America/Mexico_City"
+
+  # OFF means fire at 05:00 exactly. The default window lets the run start up to
+  # ten minutes late, which is harmless for most jobs and wrong for one whose
+  # output someone reads at 05:30.
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.dispatcher.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+  }
+}
