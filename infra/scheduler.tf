@@ -102,5 +102,13 @@ resource "aws_scheduler_schedule" "daily" {
     arn      = aws_lambda_function.dispatcher.arn
     role_arn = aws_iam_role.scheduler.arn
 
+    # Three attempts inside one hour. The AWS default is 185 attempts over 24
+    # hours, which for a daily job means retrying yesterday's run while today's
+    # is already due.
+    retry_policy {
+      maximum_retry_attempts       = 3
+      maximum_event_age_in_seconds = 3600
+    }
+
   }
 }
