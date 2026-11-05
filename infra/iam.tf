@@ -66,3 +66,20 @@ resource "aws_iam_role_policy" "task_exec_logs" {
   policy = data.aws_iam_policy_document.task_exec_logs.json
 }
 
+# The agent reads the secret once and injects it into the container as
+# environment variables, which is why the permission sits here and not on the
+# task role. Scoped to that one secret ARN from bootstrap, not to secretsmanager:*.
+data "aws_iam_policy_document" "task_exec_secret" {
+  statement {
+    sid       = "ReadDbCredentials"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [var.db_secret_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_exec_secret" {
+  name   = "task-exec-secret"
+  role   = aws_iam_role.task_execution.name
+  policy = data.aws_iam_policy_document.task_exec_secret.json
+}
+
