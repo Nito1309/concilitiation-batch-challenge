@@ -83,3 +83,14 @@ resource "aws_iam_role_policy" "task_exec_secret" {
   policy = data.aws_iam_policy_document.task_exec_secret.json
 }
 
+# Task role. Same trust policy as the execution role, completely different
+# permissions: this one is assumed by the process inside the container. Swapping
+# the two is the classic mistake: a wrong execution role leaves the task in
+# PENDING with no app logs, a wrong task role starts the container and then fails
+# with AccessDenied.
+resource "aws_iam_role" "task" {
+  name               = "${local.name_prefix}-task"
+  description        = "Application runtime: read and write its own S3 prefixes."
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
