@@ -45,6 +45,16 @@ resource "aws_security_group" "task" {
     protocol        = "tcp"
     security_groups = [var.db_security_group_id]
   }
+
+  # S3 is read and written through its public endpoint, so the task needs
+  # ordinary HTTPS egress. There is no S3 VPC endpoint in this stack yet.
+  egress {
+    description = "HTTPS to S3"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 output "cluster_name" {
