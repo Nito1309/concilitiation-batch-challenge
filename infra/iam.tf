@@ -136,3 +136,38 @@ resource "aws_iam_role" "dispatcher" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
+# RunAppTask is a built ARN with a ":*" revision wildcard instead of a reference
+# to aws_ecs_task_definition.app: 3.5 consumes this role, so pointing at the task
+# definition here would close a dependency cycle.
+#
+# iam:PassRole is what lets the dispatcher hand the task role to ECS. Without the
+# condition it could pass any role it can see, so it is pinned to that one role
+# and to the ECS service.
+data "aws_iam_policy_document" "dispatcher" {
+  statement {
+    sid     = "RunAppTask"
+    actions = ["ecs:RunTask"]
+    resources = [
+      "arn:aws:ecs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name_prefix}-app:*"
+    ]
+  }
+
+  statement {
+    sid       = "PassTaskRoleOnly"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.task.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "dispatcher" {
+  name   = "dispatcher-ecs"
+  role   = aws_iam_role.dispatcher.name
+  policy = data.aws_iam_policy_document.dispatcher.json
+}
+
