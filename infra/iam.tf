@@ -25,3 +25,25 @@ resource "aws_iam_role" "task_execution" {
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
+# Image actions are scoped to this stack's repository. ecr:GetAuthorizationToken
+# is the exception: it issues a registry token for the whole account and has no
+# ARN form, so it is the only Resource "*" in the file.
+data "aws_iam_policy_document" "task_exec_ecr" {
+  statement {
+    sid       = "PullAppImage"
+    actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
+    resources = [aws_ecr_repository.app.arn]
+  }
+  statement {
+    sid       = "EcrAuthToken"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"] # account-level action, no ARN form exists
+  }
+}
+
+resource "aws_iam_role_policy" "task_exec_ecr" {
+  name   = "task-exec-ecr"
+  role   = aws_iam_role.task_execution.name
+  policy = data.aws_iam_policy_document.task_exec_ecr.json
+}
+
