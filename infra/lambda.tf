@@ -64,3 +64,31 @@ resource "aws_lambda_function" "dispatcher" {
   depends_on = [aws_cloudwatch_log_group.dispatcher]
 }
 
+resource "aws_lambda_function" "notifier" {
+  function_name = "${local.name_prefix}-notifier"
+  description   = "Emails an S3 object arrival (stub: logs the event)."
+  role          = aws_iam_role.notifier.arn
+
+  runtime          = "python3.12"
+  handler          = "handlers.notifier.handler"
+  filename         = data.archive_file.handlers.output_path
+  source_code_hash = data.archive_file.handlers.output_base64sha256
+
+  memory_size = 128
+
+  # Default is 3s. Calling SES takes longer than that on a cold start, and a
+  # timeout would surface as a failed send rather than a slow one.
+  timeout = 10
+
+  environment {
+    variables = {
+      SES_SENDER    = var.notification_email_from
+      SES_RECIPIENT = var.notification_email_to
+    }
+  }
+
+  tags = local.common_tags
+
+  depends_on = [aws_cloudwatch_log_group.notifier]
+}
+
