@@ -12,8 +12,8 @@ locals {
   # setting a non-empty bucket_name on a live stack is a bucket replacement — and force_destroy is only enable in lab
   bucket_name = var.bucket_name != "" ? var.bucket_name : "${local.name_prefix}-${one(random_id.bucket_suffix[*].hex)}"
 
-  # IAM
-  log_group_name = "/aws/ecs/${local.name_prefix}-app"
+  # IAM + ECS
+  log_group_name = "/ecs/${local.name_prefix}-app"
 
   # Email notifier will iterate it
   s3_prefixes = {
