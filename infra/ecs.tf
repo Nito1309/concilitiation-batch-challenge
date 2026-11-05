@@ -95,6 +95,17 @@ resource "aws_ecs_task_definition" "app" {
         { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
         { name = "DB_PASSWORD", valueFrom = "${var.db_secret_arn}:password::" },
       ]
+
+      # stdout/stderr -> CloudWatch, stream prefix "app". The group is the one
+      # the execution role is already allowed to write to (iam.tf).
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.app.name
+          awslogs-region        = data.aws_region.current.region
+          awslogs-stream-prefix = "app"
+        }
+      }
     }
   ])
 }
