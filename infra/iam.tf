@@ -94,3 +94,25 @@ resource "aws_iam_role" "task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
+# Two statements because the two ARN shapes differ: object actions take
+# "<bucket>/*", the bucket action takes "<bucket>". Nothing outside the data
+# bucket is reachable from the app code.
+data "aws_iam_policy_document" "task_s3" {
+  statement {
+    sid       = "ReadWriteObjects"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.data.arn}/*"]
+  }
+  statement {
+    sid       = "ListBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.data.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_s3" {
+  name   = "task-s3"
+  role   = aws_iam_role.task.name
+  policy = data.aws_iam_policy_document.task_s3.json
+}
+
