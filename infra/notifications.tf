@@ -42,3 +42,14 @@ resource "aws_cloudwatch_event_target" "notifier" {
   # as ECS wrote it, because stopCode, stoppedReason and exitCode are all in it.
 }
 
+# EventBridge needs the right to invoke, stated on the function side. Without it
+# the rule still matches and the target still exists -- the invocation is what
+# fails, which is the least visible kind of broken.
+resource "aws_lambda_permission" "events_notifier" {
+  statement_id  = "AllowEventBridgeTaskStopped"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.notifier.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.task_stopped.arn
+}
+
