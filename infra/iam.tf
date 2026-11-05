@@ -116,3 +116,23 @@ resource "aws_iam_role_policy" "task_s3" {
   policy = data.aws_iam_policy_document.task_s3.json
 }
 
+# Lambda roles trust lambda.amazonaws.com, so they need their own trust document.
+data "aws_iam_policy_document" "lambda_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+# Dispatcher role: starts one ECS task per run. Separate from the notifier so
+# that the function allowed to start tasks is not the function allowed to send
+# mail, and neither carries the app's S3 permissions.
+resource "aws_iam_role" "dispatcher" {
+  name               = "${local.name_prefix}-dispatcher"
+  description        = "Dispatcher Lambda: start one ECS task per run."
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
