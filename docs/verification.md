@@ -581,6 +581,126 @@ a failure whose message points at the notification, not at the missing permissio
   and `"userIdentity": {"principalId": "AWS:EMULATOR"}`. The filter and the target are real; those
   two fields are not.
 
+## 3.7 — the daily schedule (`infra/scheduler.tf`)
+
+Five resources to make one function run at 05:00: the schedule itself, the role Scheduler assumes to
+call it, that role's permission, a queue for invocations that never succeed, and the queue's
+permission. The schedule is one block; the rest is what makes a failed tick visible instead of
+silent.
+
+### Apply
+
+```console
+$ terraform -chdir=infra apply
+...
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+```
+
+```console
+$ aws --endpoint-url http://localhost:4566 scheduler get-schedule \
+    --name conciliacion-batch-lab-daily --group-name default
+{
+    "Arn": "arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily",
+    "Description": "Daily reconciliation run at 05:00 America/Mexico_City.",
+    "FlexibleTimeWindow": { "Mode": "OFF" },
+    "GroupName": "default",
+    "Name": "conciliacion-batch-lab-daily",
+    "ScheduleExpression": "cron(0 5 * * ? *)",
+    "ScheduleExpressionTimezone": "America/Mexico_City",
+    "State": "ENABLED",
+    "Target": {
+        "Arn": "arn:aws:lambda:us-east-1:000000000000:function:conciliacion-batch-lab-dispatcher",
+        "DeadLetterConfig": { "Arn": "arn:aws:sqs:us-east-1:000000000000:***" },
+        "RetryPolicy": { "MaximumEventAgeInSeconds": 3600, "MaximumRetryAttempts": 3 },
+        "RoleArn": "arn:aws:iam::000000000000:role/conciliacion-batch-lab-scheduler"
+    }
+}
+```
+
+`State` is `ENABLED` from creation: a schedule that has to be switched on afterwards is a schedule
+someone forgets to switch on. `GroupName` is `default` because 3.6 pinned the invoke permission to
+`.../schedule/default/<name>` — the group is part of that ARN, not a label.
+
+### The timezone is the whole point
+
+```console
+$ TZ=America/Mexico_City date '+%Y-%m-%d %H:%M %Z (UTC%z)'
+2026-11-05 15:05 CST (UTC-0600)
+$ TZ=UTC date '+%Y-%m-%d %H:%M %Z'
+2026-11-05 21:05 UTC
+```
+
+05:00 in Mexico City is 11:00 UTC today. In summer the same city is `CDT` (UTC-5) and 05:00 local
+becomes 10:00 UTC. `cron(0 11 * * ? *)` would therefore be right for half the year and one hour late
+for the other half; `cron(0 5 * * ? *)` with `schedule_expression_timezone` is right every day,
+because Scheduler resolves the zone per run and the expression never changes.
+
+This is also the reason this is an `aws_scheduler_schedule` and not an `aws_cloudwatch_event_rule`: a
+rule's cron is read in UTC and it publishes to a bus for someone else to route, while a schedule
+keeps its own zone, its own retry budget and its own role.
+
+### Two permissions pointing at each other
+
+```console
+$ aws iam get-role-policy --role-name conciliacion-batch-lab-scheduler \
+    --policy-name scheduler-invoke --query PolicyDocument
+{
+  "Statement": [{
+    "Sid": "InvokeDispatcher",
+    "Action": "lambda:InvokeFunction",
+    "Resource": "arn:aws:lambda:...:function:conciliacion-batch-lab-dispatcher",
+    "Condition": { "ArnLike": { "aws:SourceArn": "arn:aws:scheduler:...:schedule/default/conciliacion-batch-lab-daily" } }
+  }]
+}
+```
+
+3.6's `aws_lambda_permission` allows `scheduler.amazonaws.com` on one schedule ARN; this policy
+allows one function, and only when the caller is that same schedule ARN. Either side alone is too
+broad, and the string they agree on is `local.dispatch_schedule_name` — the one thing to check first
+if an invoke is ever denied.
+
+The ARN is written out here instead of referenced from `aws_scheduler_schedule.daily.arn` because
+the schedule's target points back at this role: referencing it would be a cycle. Both sides derive
+from the same local, which is what keeps the copy honest.
+
+### The retry budget
+
+AWS retries a failed schedule target 185 times over 24 hours by default. For a job that runs daily,
+that means a broken invocation from yesterday is still being retried when today's run is due, and
+the DLQ fills behind both. Three attempts inside one hour ends the argument before the next run
+starts; whatever still fails lands in `conciliacion-batch-lab-scheduler-dlq`, which keeps messages
+for 14 days — the same window as the log groups, so a failure and its logs expire together.
+
+### Nothing ticks here
+
+Floci stores a schedule and returns it faithfully, but it does not run a timer. Probed with a
+throwaway `rate(1 minute)` schedule and nothing else:
+
+```console
+$ aws ... scheduler create-schedule --name probe-rate --schedule-expression "rate(1 minute)" ...
+streams before: 3
+streams after:  3        # 140 seconds later
+```
+
+Three log streams before, three after, no invocation. On AWS the same configuration produces a new
+stream within a minute of the cron firing.
+
+### What this does not prove
+
+- **No tick.** The expression, zone and target are stored and readable; the firing is not
+  reproducible in the emulator, so "runs at 05:00" is a claim about the definition only.
+- **The permission was never exercised.** The loop above would need Floci to fire for the
+  `SourceArn` condition to be evaluated at all, and IAM is not enforced here anyway.
+- **The DLQ never received anything.** Its retention, SSE and role permission are readable; an
+  exhausted retry is not producible without a failing target.
+- **`list-schedules` drops fields.** It returned `None` for both `ScheduleExpression` and
+  `ScheduleExpressionTimezone` while `get-schedule` had them. Read a schedule one at a time.
+- **Floci masks the queue name in ARNs.** `DeadLetterConfig.Arn` comes back as
+  `arn:aws:sqs:us-east-1:000000000000:***`, and `get-queue-attributes` masks `QueueArn` the same
+  way, so the DLQ is identifiable by its URL, not by the ARN the API echoes.
+- **The schedule name is load-bearing.** Renaming it in `locals.tf` without re-applying the Lambda
+  permission leaves a schedule whose invoke is denied, and nothing in `get-schedule` shows it.
+
 ## What Floci does not emulate
 
 Applies to this piece and grows as the other pieces land.
