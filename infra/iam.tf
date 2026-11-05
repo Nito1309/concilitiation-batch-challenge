@@ -171,3 +171,11 @@ resource "aws_iam_role_policy" "dispatcher" {
   policy = data.aws_iam_policy_document.dispatcher.json
 }
 
+# Log permissions for a Lambda are always the same four calls, so both Lambda
+# roles take the AWS-managed policy instead of a hand-written one: nothing to
+# scope, nothing to maintain.
+resource "aws_iam_role_policy_attachment" "dispatcher_logs" {
+  role       = aws_iam_role.dispatcher.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
