@@ -103,3 +103,15 @@ resource "aws_lambda_permission" "scheduler_dispatcher" {
   source_arn    = "arn:aws:scheduler:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.dispatch_schedule_name}"
 }
 
+# S3 is the only principal allowed to invoke the notifier, and only for this
+# bucket. source_account is required alongside source_arn: without it any
+# account's bucket could point at this function.
+resource "aws_lambda_permission" "s3_notifier" {
+  statement_id   = "AllowS3InboxInvoke"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.notifier.function_name
+  principal      = "s3.amazonaws.com"
+  source_arn     = aws_s3_bucket.data.arn
+  source_account = data.aws_caller_identity.current.account_id
+}
+
