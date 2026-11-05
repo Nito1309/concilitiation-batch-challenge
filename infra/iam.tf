@@ -186,3 +186,26 @@ resource "aws_iam_role" "notifier" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
+# The resource is the verified identity ARN, so the function can only send as
+# that address. ses:SendRawEmail stays out until a handler needs HTML bodies.
+data "aws_iam_policy_document" "notifier" {
+  statement {
+    sid     = "SendRunNotifications"
+    actions = ["ses:SendEmail"]
+    resources = [
+      "arn:aws:ses:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:identity/${var.notification_email_from}"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "notifier" {
+  name   = "notifier-ses"
+  role   = aws_iam_role.notifier.name
+  policy = data.aws_iam_policy_document.notifier.json
+}
+
+resource "aws_iam_role_policy_attachment" "notifier_logs" {
+  role       = aws_iam_role.notifier.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
