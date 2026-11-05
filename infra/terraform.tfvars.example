@@ -15,5 +15,7 @@ db_security_group_id = "<sg-id>"
 db_secret_arn        = "<secret-arn>"
 db_endpoint          = "<host>:<port>"
 
+notification_email_from = "<verified-sender>"
+
 tags = { Owner = "candidate" }
 

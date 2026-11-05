@@ -29,6 +29,13 @@ variable "bucket_name" {
   default     = ""
 }
 
+variable "notification_email_from" {
+  description = "Verified SES sender identity (SES is wired in 3.8)."
+  type        = string
+  nullable    = false
+}
+
+
 # --- from bootstrap-floci: no defaults on purpose ---
 variable "vpc_id" {
   description = "VPC created by bootstrap-floci."
