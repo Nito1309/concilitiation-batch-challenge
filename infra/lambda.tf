@@ -115,3 +115,24 @@ resource "aws_lambda_permission" "s3_notifier" {
   source_account = data.aws_caller_identity.current.account_id
 }
 
+# A bucket holds one notification configuration; a second resource here would
+# silently replace this one, so it is a single block with a single filter.
+#
+# The prefix filter is what keeps the flow quiet: the app writes to data/ and
+# reports/ on every run, and only inbox/ is a human asking for an email.
+resource "aws_s3_bucket_notification" "data" {
+  bucket = aws_s3_bucket.data.id
+
+  lambda_function {
+    id                  = "inbox-to-notifier"
+    lambda_function_arn = aws_lambda_function.notifier.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = local.s3_prefixes.inbox
+  }
+
+  # S3 validates the destination at write time by reading the function's
+  # policy. Without the permission already in place the bucket rejects the
+  # whole configuration.
+  depends_on = [aws_lambda_permission.s3_notifier]
+}
+
