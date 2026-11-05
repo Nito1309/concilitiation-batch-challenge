@@ -114,3 +114,13 @@ output "cluster_name" {
   description = "Cluster the dispatcher Lambda calls RunTask on (3.6)."
   value       = aws_ecs_cluster.app.name
 }
+
+output "task_definition_arn" {
+  description = "Task definition family:revision to start, or to override per run."
+  value       = aws_ecs_task_definition.app.arn
+}
+
+output "task_security_group_id" {
+  description = "Security group every RunTask call must attach (with var.subnet_ids)."
+  value       = aws_security_group.task.id
+}
