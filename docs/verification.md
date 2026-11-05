@@ -831,6 +831,122 @@ have been configuration that looks right and does nothing.
 Earlier sections still show `s3_bucket_name` and `dispatcher_function_name`: those were the output
 names at the time. This piece renamed them to the four the issue asks for.
 
+## 3.9 — the three triggers, and the guide the reviewer reads (`infra/README.md`, `docs/flow.svg`)
+
+### First, a defect the documentation exposed
+
+Writing the "validate the three events" steps meant writing the third one down, and the third one did
+not exist. `inbox/` was still wired to the **notifier** — the shape a 3.6 commit left behind, when the
+notifier was still the S3 stub. Since 3.8 the notifier ignores anything that is not an ECS event, so
+a file dropped in `inbox/` was being delivered to a function that could only say
+`Evento ignorado`. The feed path had no route to the dispatcher at all.
+
+Fixed before documenting, in two commits: the bucket notification now targets the dispatcher, and its
+resource policy was renamed to match (`s3_dispatcher`, still pinned to this bucket and this account).
+The notifier keeps only the EventBridge rule from 3.8.
+
+```
+Plan: 1 to add, 4 to change, 1 to destroy.
+aws_lambda_permission.s3_dispatcher: Creation complete
+aws_lambda_permission.s3_notifier: Destruction complete
+aws_s3_bucket_notification.data: Modifications complete
+```
+
+### The dispatcher learns the mode from the event
+
+`_traducir` reads the shape rather than a configuration flag: `Records[0].s3` means `feed` with
+`INPUT_KEY`, `source == "aws.scheduler"` means `daily` with nothing, anything else is `on_demand`
+with the payload re-serialised as a string. Three triggers, no per-trigger plumbing, and the same
+function name in every path.
+
+### Event 1 — daily
+
+```
+$ aws scheduler get-schedule --name conciliacion-batch-lab-daily \
+    --query '{cron:ScheduleExpression, tz:ScheduleExpressionTimezone, window:FlexibleTimeWindow.Mode}'
+{
+    "cron": "cron(0 5 * * ? *)",
+    "tz": "America/Mexico_City",
+    "window": "OFF"
+}
+
+$ aws lambda invoke --function-name conciliacion-batch-lab-dispatcher \
+    --payload '{"source":"aws.scheduler","detail-type":"Scheduled Event","resources":["arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily"]}' \
+    --cli-binary-format raw-in-base64-out /tmp/out.json >/dev/null && cat /tmp/out.json
+{"ok": true, "run_mode": "daily", "variables": {}, "procesado": false, "motivo": "RunTask es Piece 4"}
+```
+
+`variables` is empty on purpose: a tick carries no data, so the container reconciles yesterday.
+
+### Event 2 — on demand
+
+```
+$ aws lambda invoke --function-name conciliacion-batch-lab-dispatcher \
+    --payload '{"fecha_inicio":"2026-10-20","fecha_fin":"2026-10-20"}' \
+    --cli-binary-format raw-in-base64-out /tmp/out.json >/dev/null && cat /tmp/out.json
+{"ok": true, "run_mode": "on_demand", "variables": {"PAYLOAD": "{\"fecha_inicio\": \"2026-10-20\", \"fecha_fin\": \"2026-10-20\"}"}, "procesado": false, "motivo": "RunTask es Piece 4"}
+```
+
+### Event 3 — a file in `inbox/`
+
+```
+$ aws s3 cp app/ejemplos/feed-2026-10-20.csv "s3://conciliacion-batch-lab-b996ee/inbox/feed-2.csv"
+$ sleep 15
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+    --query 'events[-2:].message' --output text | tr '\t' '\n'
+[INFO] 2026-11-05T21:56:32.877Z 5d8b5f54-… RUN_MODE=feed variables={"INPUT_KEY": "inbox/feed-2.csv"}
+[INFO] 2026-11-05T21:56:32.877Z 5d8b5f54-… Destino: cluster=conciliacion-batch-lab task_definition=conciliacion-batch-lab-app subnets=subnet-8409913d,subnet-dd772813 security_groups=sg-6e8d5db7b3fbafa35
+```
+
+Nobody invoked the function: S3 did, through the notification and the resource policy.
+
+**A race worth recording.** The first upload after `apply` produced no invocation at all; the second,
+identical one, produced the line above. The bucket notification configuration read back correctly
+between the two, so this is the emulator registering the notification asynchronously rather than the
+config being wrong — the `depends_on` for the permission is in place. Practically: after an `apply`
+that changes the notification, expect the first object to be swallowed and re-upload. The guide says
+so, because a reviewer would otherwise read it as a broken trigger.
+
+Control, same command, different prefix:
+
+```
+$ aws s3 cp app/ejemplos/feed-2026-10-20.csv "s3://conciliacion-batch-lab-b996ee/data/control.csv"
+$ aws logs describe-log-streams --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+    --query 'length(logStreams)' --output text
+4
+```
+
+Same count before and after: `data/` is written by the app on every run and must not feed itself
+back in.
+
+### The notifier, unchanged and re-proved
+
+```
+$ aws events put-events --entries file:///tmp/stopped.json
+5e6c6d14-f3c3-4af9-b6e7-c2b7b64f6171
+
+[INFO] 2026-11-05T21:58:19.793Z f613e38e-… Aviso: [conciliación] FALLA · salida 2
+[INFO] 2026-11-05T21:58:20.033Z f613e38e-… Enviado: message_id=5011447e-fc4f-440e-b4b7-0deafeeb6762
+
+$ # the same event with cluster/otro-cluster
+$ aws events put-events --entries file:///tmp/other.json
+233f5729-c3fd-4bef-ac6c-fbab097b4a63
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-notifier \
+    --query 'events[-1].message' --output text
+[INFO] 2026-11-05T21:58:20.033Z f613e38e-… Enviado: message_id=5011447e-fc4f-440e-b4b7-0deafeeb6762
+```
+
+The last notifier event is still the FALLA one: the foreign-cluster event was accepted by the bus and
+never reached the function. That is the rule's `clusterArn` filter doing the work, measured by the
+absence of a new log entry rather than by reading the pattern back.
+
+### What this piece does not prove
+
+The dispatcher still returns before `RunTask`, so no event above starts a container; that is the next
+piece, and the manual `RunTask` in §3.5 is the evidence that the task definition, the subnets and the
+security group are correct. Nothing here exercises IAM enforcement, SES delivery or the DLQ, for the
+reasons listed at the end of this file.
+
 ## What Floci does not emulate
 
 Applies to this piece and grows as the other pieces land.
