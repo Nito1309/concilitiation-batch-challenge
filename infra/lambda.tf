@@ -31,3 +31,21 @@ resource "aws_cloudwatch_log_group" "notifier" {
   tags              = local.common_tags
 }
 
+resource "aws_lambda_function" "dispatcher" {
+  function_name = "${local.name_prefix}-dispatcher"
+  description   = "Starts one reconciliation task per run (stub: logs the event)."
+  role          = aws_iam_role.dispatcher.arn
+
+  runtime          = "python3.12"
+  handler          = "handlers.dispatcher.handler"
+  filename         = data.archive_file.handlers.output_path
+  source_code_hash = data.archive_file.handlers.output_base64sha256
+
+  memory_size = 256
+  timeout     = 30
+
+  tags = local.common_tags
+
+  depends_on = [aws_cloudwatch_log_group.dispatcher]
+}
+
