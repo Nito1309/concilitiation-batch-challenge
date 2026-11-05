@@ -28,3 +28,8 @@ resource "aws_ecs_cluster" "app" {
     value = "enabled"
   }
 }
+
+output "cluster_name" {
+  description = "Cluster the dispatcher Lambda calls RunTask on (3.6)."
+  value       = aws_ecs_cluster.app.name
+}
