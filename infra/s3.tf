@@ -3,7 +3,6 @@
 # would be a real write that fires the notification wired in Github issue 3.6
 # https://github.com/Nito1309/conciliacion-batch-challenge/issues/7
 
-
 # --- Data bucket -------------------------------------------------------------
 # Name: S3 bucket names are unique across ALL AWS accounts, so a literal name
 # collides on a real account even though an emulator accepts it. `var.bucket_name`
@@ -70,11 +69,3 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
     }
   }
 }
-
-# Output that will be migrated to outputs.tf later
-output "s3_bucket_name" {
-  description = "Real name of the data bucket, after any derivation."
-  value       = aws_s3_bucket.data.id
-}
-
-

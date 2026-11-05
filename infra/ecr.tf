@@ -44,8 +44,3 @@ resource "aws_ecr_lifecycle_policy" "app" {
     ]
   })
 }
-
-output "repository_url" {
-  description = "Registry URL the CI pushes to and ecs.tf pulls from."
-  value       = aws_ecr_repository.app.repository_url
-}
