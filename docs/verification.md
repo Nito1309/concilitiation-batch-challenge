@@ -390,9 +390,196 @@ the task definition or in this file.
   database credentials beyond their shape.
 - **Nothing schedules yet.** There is no service, no EventBridge rule and no dispatcher Lambda, so
   the subnets, the security group and `assignPublicIp` in this section are still typed by hand.
-  3.6 replaces that with `containerOverrides` sent by the dispatcher.
+  3.6 hands the same three values to the dispatcher Lambda as environment variables, but the
+  `RunTask` call itself lands in Piece 4.
 
 ---
+
+## 3.6 — Dispatcher and notifier Lambdas (`infra/lambda.tf`)
+
+Two functions, one job each, and both handlers are stubs that only log. The proof for this piece
+is therefore not "the batch ran" but "the trigger reaches the function": a direct invoke of the
+dispatcher, and an `inbox/` upload that reaches the notifier with nobody calling it.
+
+### Apply
+
+```bash
+cd infra
+terraform fmt -check -recursive
+terraform validate
+terraform apply
+```
+
+```text
+Apply complete! Resources: 7 added, 1 changed, 0 destroyed.
+
+dispatcher_function_name = "conciliacion-batch-lab-dispatcher"
+notifier_function_name   = "conciliacion-batch-lab-notifier"
+```
+
+Seven is the whole surface: two log groups, two functions, two invoke permissions and one bucket
+notification. The single change belongs to 3.5 — it is the leftover allow-all egress rule in
+`aws_security_group.task` being brought back to what the configuration says, and it is why the
+plan now reports `No changes`.
+
+A later apply can still show two in-place updates on the functions, with an unchanged handler
+and a new `source_code_hash`. `archive_file` hashes the zip, and a zip stores each file's
+modification time, so rewriting a handler with identical bytes produces a different hash and a
+deployment that changes nothing. The hash is trying to express "the code changed"; a timestamp
+leaks into it. Keeping the unzipped source stable between applies is what keeps the plan quiet.
+
+### One invoke
+
+The dispatcher's input in production is a scheduler tick, so the test payload is that shape:
+
+```bash
+cat > sched_event.json <<'EOF'
+{"version":"0","id":"b7c1f0aa-6f2e-4a52-9d1f-2f0f7c7a4b1e","source":"aws.scheduler",
+ "account":"000000000000","time":"2026-11-05T12:00:00Z","region":"us-east-1",
+ "detail-type":"Scheduled Event","detail":{"scheduledTime":"2026-11-05T12:00:00Z"}}
+EOF
+
+aws --endpoint-url http://localhost:4566 lambda invoke \
+  --function-name conciliacion-batch-lab-dispatcher \
+  --cli-binary-format raw-in-base64-out \
+  --payload file://sched_event.json /tmp/dispatcher_out.json
+
+cat /tmp/dispatcher_out.json
+```
+
+```text
+{"ok": true, "procesado": false, "motivo": "stub de 3.6"}
+```
+
+`--cli-binary-format raw-in-base64-out` is not optional: aws-cli v2 base64-encodes `--payload`
+by default, and the API rejects a JSON body it cannot decode (`Invalid base64: "{"version":"0"…`).
+With the flag the file is sent byte for byte, which is what a scheduler would send.
+
+### The event lands in the log
+
+```bash
+aws --endpoint-url http://localhost:4566 logs describe-log-streams \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher
+```
+
+```text
+2026/11/05/[$LATEST]336602ab
+```
+
+```bash
+aws --endpoint-url http://localhost:4566 logs get-log-events \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+  --log-stream-name '2026/11/05/[$LATEST]336602ab' --query 'events[].message' --output text
+```
+
+```text
+[INFO]  Evento recibido: {"version": "0", "id": "b7c1f0aa-…", "source": "aws.scheduler", …}
+[INFO]  Destino: cluster=conciliacion-batch-lab task_definition=conciliacion-batch-lab-app
+        subnets=subnet-8409913d,subnet-dd772813 security_groups=sg-6e8d5db7b3fbafa35
+```
+
+The second line is the real check. It shows that the four environment variables reach the
+function and already hold the values `RunTask` needs — the same cluster, family, subnets and
+group that were typed by hand in 3.5. Nothing reads them yet; that is Piece 4.
+
+The stream name has a fixed shape, `YYYY/MM/DD/[version]<suffix>`: one stream per execution
+environment, and `$LATEST` because the function has no published version or alias. The group is
+`/aws/lambda/<function name>`, the name Lambda would have created on the first invocation — with
+no retention on it. The group exists before the function on purpose, so the function inherits it
+instead of creating an immortal one.
+
+### The bucket calls the notifier
+
+Two uploads, one per prefix, so the filter is tested in both directions:
+
+```bash
+aws --endpoint-url http://localhost:4566 s3api put-object \
+  --bucket conciliacion-batch-lab-b996ee \
+  --key data/2026-11-05/resultado.json --body entrada_prueba.csv
+
+aws --endpoint-url http://localhost:4566 s3api put-object \
+  --bucket conciliacion-batch-lab-b996ee \
+  --key inbox/entrada_prueba.csv --body entrada_prueba.csv
+
+aws --endpoint-url http://localhost:4566 logs describe-log-streams \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-notifier
+```
+
+```text
+2026/11/05/[$LATEST]663c91e9
+```
+
+One stream, not two: the `data/` write produced no invocation at all, which is the point of
+`filter_prefix = local.s3_prefixes.inbox`. The app writes to `data/` and `reports/` on every run,
+and only `inbox/` is a human asking for an email.
+
+```bash
+aws --endpoint-url http://localhost:4566 logs get-log-events \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-notifier \
+  --log-stream-name '2026/11/05/[$LATEST]663c91e9' --query 'events[].message' --output text
+```
+
+```text
+[INFO]  Evento recibido: {"Records": [{"eventSource": "aws:s3", "eventName": "ObjectCreated:Put",
+        "s3": {"bucket": {"name": "conciliacion-batch-lab-b996ee"},
+               "object": {"key": "inbox/entrada_prueba.csv", "size": 25}}}]}
+[INFO]  Correo: de=notifications@example.com para=sre@example.com
+```
+
+No one called the notifier: S3 did, asynchronously, because the bucket notification says so and
+because the function's policy allows this bucket to. `SES_SENDER` and `SES_RECIPIENT` are read
+from the environment, so 3.8 only has to replace the log line with a `send_email` call.
+
+### Who may invoke
+
+```bash
+aws --endpoint-url http://localhost:4566 lambda get-policy \
+  --function-name conciliacion-batch-lab-dispatcher --query Policy --output text
+```
+
+```json
+{"Statement": [{"Sid": "AllowSchedulerInvoke", "Effect": "Allow",
+  "Principal": {"Service": "scheduler.amazonaws.com"},
+  "Action": "lambda:InvokeFunction",
+  "Resource": "arn:aws:lambda:us-east-1:000000000000:function:conciliacion-batch-lab-dispatcher",
+  "Condition": {"ArnLike": {"AWS:SourceArn":
+    "arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily"}}}]}
+```
+
+The condition is the interesting half. Without `source_arn`, every schedule in every account that
+learns the function name could start tasks; with it, exactly one schedule can. That ARN does not
+exist yet — 3.7 creates it — so the name lives in `local.dispatch_schedule_name`, and the schedule
+must be created with it or the invoke is denied.
+
+The S3 permission is the mirror image: `principal = s3.amazonaws.com`, `source_arn` of this
+bucket, and `source_account`, which closes the gap `source_arn` alone leaves (a bucket in another
+account can carry the same name in its own ARN shape).
+
+### Why the notification has `depends_on`
+
+S3 checks the destination when the notification is written: it reads the function's policy to
+confirm that `s3.amazonaws.com` may invoke it. If the permission resource is still pending, the
+bucket rejects the entire configuration with *Unable to validate destination configuration* —
+a failure whose message points at the notification, not at the missing permission. The
+`depends_on` is the difference between a first apply that works and one that does not.
+
+### What this does not prove
+
+- **Nothing calls ECS.** The dispatcher returns after logging; `RunTask` is Piece 4. The four
+  environment variables are proven to arrive, not to be used.
+- **No mail leaves the account.** The notifier logs sender and recipient; SES identities, the
+  send permission and the template are 3.8.
+- **The scheduler does not exist.** The permission names an ARN that only 3.7 will create, so the
+  end-to-end path "schedule fires → dispatcher runs" cannot be observed yet.
+- **The zip carries code, not dependencies.** `archive_file` zips `lambda/` as it is: no
+  `boto3` pin, no layer, no `requirements.txt`. Piece 4 adds whatever the handlers import.
+- **Floci does not enforce IAM.** Every invoke here would succeed with an empty role policy, so
+  the policies are shape, not permission. The two `aws_lambda_permission` resources are stored and
+  readable, but nothing in the emulator tests a denied cross-account call.
+- **The notification is emulator-flavoured.** The delivered record carries
+  `"configurationId": "emulator"` instead of the `inbox-to-notifier` id from the configuration,
+  and `"userIdentity": {"principalId": "AWS:EMULATOR"}`. The filter and the target are real; those
+  two fields are not.
 
 ## What Floci does not emulate
 
