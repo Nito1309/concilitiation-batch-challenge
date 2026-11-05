@@ -17,3 +17,20 @@ resource "aws_ses_email_identity" "sender" {
   email = var.notification_email_from
 }
 
+# The filter is the whole design. `lastStatus` is the only field that says a task
+# is over, and `clusterArn` is what keeps the rule from firing for every task in
+# the account.
+resource "aws_cloudwatch_event_rule" "task_stopped" {
+  name        = "${local.name_prefix}-task-stopped"
+  description = "Any task of this cluster reaching STOPPED."
+
+  event_pattern = jsonencode({
+    source      = ["aws.ecs"]
+    detail-type = ["ECS Task State Change"]
+    detail = {
+      clusterArn = [aws_ecs_cluster.app.arn]
+      lastStatus = ["STOPPED"]
+    }
+  })
+}
+
