@@ -35,6 +35,16 @@ resource "aws_security_group" "task" {
   name        = "${local.name_prefix}-task"
   description = "Batch task: outbound to the database and to S3 only."
   vpc_id      = var.vpc_id
+
+  # Postgres to the RDS security group itself, not to a CIDR: the rule follows
+  # the database wherever bootstrap-floci puts it.
+  egress {
+    description     = "Postgres to the database"
+    from_port       = local.db_port
+    to_port         = local.db_port
+    protocol        = "tcp"
+    security_groups = [var.db_security_group_id]
+  }
 }
 
 output "cluster_name" {
