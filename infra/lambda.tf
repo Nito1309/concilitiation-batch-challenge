@@ -1,7 +1,12 @@
 # =============================================================================
 # Two Lambdas, one job each:
-#   dispatcher -> turns a schedule tick into an ECS RunTask call   (3.7 sends it)
-#   notifier   -> turns an S3 object arrival into an email         (3.8 sends it)
+#   dispatcher -> turns a trigger into an ECS RunTask call
+#   notifier   -> turns a stopped task into an email
+#
+# The dispatcher has three triggers and they are all here or next door: the
+# schedule (3.7), a manual AWS CLI invoke (no resource needed -- the IAM role is
+# the gate) and an object landing in inbox/ (the notification config below).
+# The notifier is invoked by the task-stopped rule (3.8).
 #
 # Both handlers are stubs: they log the event and return. 3.6 is about the
 # plumbing around them -- packaging, size, timeout, logging and, above all,
@@ -105,13 +110,13 @@ resource "aws_lambda_permission" "scheduler_dispatcher" {
   source_arn    = "arn:aws:scheduler:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.dispatch_schedule_name}"
 }
 
-# S3 is the only principal allowed to invoke the notifier, and only for this
+# S3 is the only principal allowed to invoke the dispatcher, and only for this
 # bucket. source_account is required alongside source_arn: without it any
 # account's bucket could point at this function.
-resource "aws_lambda_permission" "s3_notifier" {
+resource "aws_lambda_permission" "s3_dispatcher" {
   statement_id   = "AllowS3InboxInvoke"
   action         = "lambda:InvokeFunction"
-  function_name  = aws_lambda_function.notifier.function_name
+  function_name  = aws_lambda_function.dispatcher.function_name
   principal      = "s3.amazonaws.com"
   source_arn     = aws_s3_bucket.data.arn
   source_account = data.aws_caller_identity.current.account_id
@@ -121,13 +126,17 @@ resource "aws_lambda_permission" "s3_notifier" {
 # silently replace this one, so it is a single block with a single filter.
 #
 # The prefix filter is what keeps the flow quiet: the app writes to data/ and
-# reports/ on every run, and only inbox/ is a human asking for an email.
+# reports/ on every run, and only inbox/ is a human dropping a file.
+#
+# The target is the dispatcher, not the notifier: an object in inbox/ is work to
+# do (a `feed` run), not a result to report. Sending it to the notifier left the
+# feed path wired to a function that could only ignore it.
 resource "aws_s3_bucket_notification" "data" {
   bucket = aws_s3_bucket.data.id
 
   lambda_function {
-    id                  = "inbox-to-notifier"
-    lambda_function_arn = aws_lambda_function.notifier.arn
+    id                  = "inbox-to-dispatcher"
+    lambda_function_arn = aws_lambda_function.dispatcher.arn
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = local.s3_prefixes.inbox
   }
@@ -135,5 +144,5 @@ resource "aws_s3_bucket_notification" "data" {
   # S3 validates the destination at write time by reading the function's
   # policy. Without the permission already in place the bucket rejects the
   # whole configuration.
-  depends_on = [aws_lambda_permission.s3_notifier]
+  depends_on = [aws_lambda_permission.s3_dispatcher]
 }
