@@ -47,3 +47,22 @@ resource "aws_iam_role_policy" "task_exec_ecr" {
   policy = data.aws_iam_policy_document.task_exec_ecr.json
 }
 
+# Scoped to the log group created in 3.5 (ecs.tf). logs:CreateLogGroup is not
+# granted on purpose: it only works with Resource "*", and creating the group is
+# Terraform's job, not the agent's.
+data "aws_iam_policy_document" "task_exec_logs" {
+  statement {
+    sid     = "WriteTaskLogs"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = [
+      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${local.log_group_name}:*"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "task_exec_logs" {
+  name   = "task-exec-logs"
+  role   = aws_iam_role.task_execution.name
+  policy = data.aws_iam_policy_document.task_exec_logs.json
+}
+
