@@ -80,3 +80,17 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# --- ECS task sizing (3.5) ---
+
+variable "task_cpu" {
+  description = "Fargate cpu units for the batch task: 512 = 0.5 vCPU."
+  type        = string
+  default     = "512"
+}
+
+variable "task_memory" {
+  description = "Fargate memory in MiB; must be a valid pair with task_cpu."
+  type        = string
+  default     = "1024"
+}
