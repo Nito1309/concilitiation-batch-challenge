@@ -94,3 +94,9 @@ variable "task_memory" {
   type        = string
   default     = "1024"
 }
+
+variable "image_tag" {
+  description = "App image tag to run; CI passes the commit SHA, 'local' before the first push."
+  type        = string
+  default     = "local"
+}
