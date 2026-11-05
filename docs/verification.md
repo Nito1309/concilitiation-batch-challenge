@@ -701,6 +701,136 @@ stream within a minute of the cron firing.
 - **The schedule name is load-bearing.** Renaming it in `locals.tf` without re-applying the Lambda
   permission leaves a schedule whose invoke is denied, and nothing in `get-schedule` shows it.
 
+## 3.8 — the alert path (`infra/notifications.tf`, `infra/outputs.tf`)
+
+The stack stops being a demo here. A task that fails at 05:00 is only useful to know about if
+something tells someone, so this piece is the failure path: ECS publishes a state change, a rule
+keeps the terminal ones, the notifier turns them into an email, and a queue catches the invocations
+that never got that far.
+
+### Apply
+
+```console
+$ terraform -chdir=infra apply
+...
+Apply complete! Resources: 7 added, 3 changed, 0 destroyed.
+
+Outputs:
+
+bucket_name         = "conciliacion-batch-lab-b996ee"
+cluster_name        = "conciliacion-batch-lab"
+dispatcher_name     = "conciliacion-batch-lab-dispatcher"
+notifier_name       = "conciliacion-batch-lab-notifier"
+repository_url      = "000000000000.dkr.ecr.us-east-1.localhost:4566/conciliacion-batch-lab-app"
+task_definition_arn = "arn:aws:ecs:us-east-1:000000000000:task-definition/conciliacion-batch-lab-app:1"
+task_security_group_id = "sg-6e8d5db7b3fbafa35"
+```
+
+The first attempt failed, and the failure is worth keeping:
+
+```console
+Error: listing tags for SESv2 (Simple Email V2) Email Identity
+(arn:aws:ses:us-east-1::identity/notifications@example.com): ...
+BadRequestException: ResourceArn is not the expected format
+```
+
+The identity was created; reading its tags back was not possible, because Floci returns the identity
+ARN with an empty account field (`us-east-1::identity/…`) while `sesv2` in the provider lists tags
+right after create. `aws_ses_email_identity` — the v1 resource, which has nothing to read back —
+creates cleanly on the same emulator, which is why the file uses it.
+
+### The rule
+
+```console
+$ aws --endpoint-url http://localhost:4566 events describe-rule \
+    --name conciliacion-batch-lab-task-stopped
+{
+    "Name": "conciliacion-batch-lab-task-stopped",
+    "State": "ENABLED",
+    "EventPattern": "{\"detail\":{\"clusterArn\":[\"arn:aws:ecs:...:cluster/conciliacion-batch-lab\"],\"lastStatus\":[\"STOPPED\"]},\"detail-type\":[\"ECS Task State Change\"],\"source\":[\"aws.ecs\"]}"
+}
+```
+
+Four fields, each doing one job: `source` and `detail-type` pick the ECS event family, `clusterArn`
+keeps other clusters out, `lastStatus` is the only field that says the task is over. A rule without
+the cluster filter fires for every task in the account — which on a shared account is a mailbox
+nobody reads.
+
+The filter was tested rather than assumed: the same event with `cluster/otro-cluster` was published
+and produced no new log stream (2 before, 2 after), while the real cluster's event produced one.
+
+### The permission, and why the rule alone is not enough
+
+```console
+$ aws lambda get-policy --function-name conciliacion-batch-lab-notifier
+[{"Sid": "AllowS3InboxInvoke",          "Principal": {"Service": "s3.amazonaws.com"},
+  "SourceArn": "arn:aws:s3:::conciliacion-batch-lab-b996ee"},
+ {"Sid": "AllowEventBridgeTaskStopped", "Principal": {"Service": "events.amazonaws.com"},
+  "SourceArn": "arn:aws:events:...:rule/conciliacion-batch-lab-task-stopped"}]
+```
+
+A rule that matches and a target that exists still invoke nothing if the function's resource policy
+does not name the rule. That is the quietest failure in this stack: no error anywhere, the event just
+falls on the floor. Two statements now, one per trigger, each pinned to a `source_arn`.
+
+### The email
+
+Two events published on the default bus, both this cluster, both `STOPPED`:
+
+```console
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-notifier
+[INFO] Aviso: [conciliación] FALLA · salida 2
+[INFO] Enviado: message_id=3fe5190c-7c05-41d3-857f-74ee1a4814d4
+[INFO] Aviso: [conciliación] OK · ejecución correcta
+[INFO] Enviado: message_id=50881d20-5f45-48d4-9dc3-f93e5e6e40de
+```
+
+The subject is the decision (open it or not); the body carries `taskArn`, `clusterArn`, `stopCode`,
+`stoppedReason` and the container's `exitCode` with its meaning from `app/README.md`, then the three
+things to check in order: the task's log stream, the task definition's variables and secret, and the
+input file if the exit code was 3.
+
+An object uploaded to `inbox/` during the same window produced no email:
+
+```console
+[INFO] Evento ignorado: detail-type=None
+```
+
+The handler refuses to treat an S3 event as a result — an upload is work to do, not news — so the
+notification stays tied to what actually ran.
+
+### The queue
+
+```console
+$ aws sqs get-queue-attributes --queue-url .../conciliacion-batch-lab-notifier-dlq
+ApproximateNumberOfMessages: 0
+```
+
+Two retries inside one hour, then the event goes to the queue
+(`MaximumRetryAttempts: 2`, `MaximumEventAgeInSeconds: 3600`, destination
+`arn:aws:sqs:…:***` — Floci masks the queue name in ARNs it returns).
+
+`redrive_policy` is deliberately absent, although the issue asked for it: `maxReceiveCount` lives on
+a queue that a consumer reads, and this queue is the destination. Lambda writes, a human reads, and
+the message has been received at most once, so a receive count would never reach its limit. The
+redrive after a fix is a `start-message-move-task`, not a policy. Putting the policy on anyway would
+have been configuration that looks right and does nothing.
+
+### What this does not prove
+
+- **The queue never received anything.** Its retention, SSE, role permission and the function's
+  failure destination are all readable, but producing a message would need the notifier to crash
+  after EventBridge delivered the event, which nothing here triggers.
+- **SES accepted the message, it did not deliver it.** Floci verifies the identity automatically
+  (`VerificationStatus: Success` — no mailbox was ever confirmed) and returns a message id. What
+  happened after that is not observable here.
+- **The retries were never exercised.** A second attempt only happens when the first throws.
+- **The S3 trigger on `inbox/` still exists** and now lands in the handler's ignore branch. Removing
+  it belongs with the piece that makes an upload start a task, not with this one.
+
+Earlier sections still show `s3_bucket_name` and `dispatcher_function_name`: those were the output
+names at the time. This piece renamed them to the four the issue asks for.
+
 ## What Floci does not emulate
 
 Applies to this piece and grows as the other pieces land.
