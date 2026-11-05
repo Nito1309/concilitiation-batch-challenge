@@ -70,3 +70,31 @@ resource "aws_sqs_queue" "notifier_dlq" {
   # after the bug is fixed, not a policy.
 }
 
+# The Lambda service writes the destination, using the function's own role, so
+# the role needs to send to this queue. It is a separate statement from the SES
+# one on purpose: sending email and preserving a failed event are different jobs.
+data "aws_iam_policy_document" "notifier_dlq" {
+  statement {
+    sid       = "FailedInvocationDestination"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.notifier_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "notifier_dlq" {
+  name   = "notifier-dlq"
+  role   = aws_iam_role.notifier.name
+  policy = data.aws_iam_policy_document.notifier_dlq.json
+}
+
+resource "aws_lambda_function_event_invoke_config" "notifier" {
+  function_name                = aws_lambda_function.notifier.function_name
+  maximum_retry_attempts       = 2
+  maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.notifier_dlq.arn
+    }
+  }
+}
