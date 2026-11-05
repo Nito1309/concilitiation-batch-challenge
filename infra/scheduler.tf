@@ -110,5 +110,9 @@ resource "aws_scheduler_schedule" "daily" {
       maximum_event_age_in_seconds = 3600
     }
 
+    # Reached only after the retries are exhausted.
+    dead_letter_config {
+      arn = aws_sqs_queue.scheduler_dlq.arn
+    }
   }
 }
