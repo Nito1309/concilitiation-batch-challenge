@@ -29,6 +29,14 @@ resource "aws_ecs_cluster" "app" {
   }
 }
 
+# No ingress rules: nothing connects INTO a task. The egress rules below are the
+# whole network policy, which makes it readable at a glance.
+resource "aws_security_group" "task" {
+  name        = "${local.name_prefix}-task"
+  description = "Batch task: outbound to the database and to S3 only."
+  vpc_id      = var.vpc_id
+}
+
 output "cluster_name" {
   description = "Cluster the dispatcher Lambda calls RunTask on (3.6)."
   value       = aws_ecs_cluster.app.name
