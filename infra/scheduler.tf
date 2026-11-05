@@ -57,3 +57,11 @@ resource "aws_iam_role_policy" "scheduler_invoke" {
   policy = data.aws_iam_policy_document.scheduler_invoke.json
 }
 
+# Where an invocation that never succeeded ends up. Scheduler retries on its own
+# before giving up, so without a queue a lost run leaves no trace anywhere.
+resource "aws_sqs_queue" "scheduler_dlq" {
+  name                      = "${local.name_prefix}-scheduler-dlq"
+  message_retention_seconds = 1209600 # 14 days, same as the log groups
+  sqs_managed_sse_enabled   = true
+}
+
