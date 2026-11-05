@@ -232,6 +232,168 @@ repository, log group, secret, bucket, task definition or SES identity.
 
 ---
 
+## 3.5 — ECS cluster and the RunTask task definition (`infra/ecs.tf`)
+
+The piece adds no service. The job exists to run once, so the proof is a `RunTask` call that
+starts a container, the agent resolves the database secret, the app writes its JSON events to
+CloudWatch, and the task stops with a reason.
+
+### Apply
+
+```bash
+cd infra
+terraform fmt -check -recursive
+terraform validate
+terraform apply
+```
+
+```text
+Apply complete!
+
+cluster_name      = "conciliacion-batch-lab"
+repository_url    = "000000000000.dkr.ecr.us-east-1.localhost:4566/conciliacion-batch-lab-app"
+s3_bucket_name    = "conciliacion-batch-lab-b996ee"
+task_definition_arn = "arn:aws:ecs:us-east-1:000000000000:task-definition/conciliacion-batch-lab-app:1"
+```
+
+Four resources are new: the log group, the task security group, the cluster and the task
+definition. Nothing else changes shape — the log group rename in this piece only alters a string
+inside the execution role's policy, which Terraform rewrites in place.
+
+The cluster name is `<project>-<environment>`, which is `local.name_prefix`: the same prefix the
+role names, the bucket and the repository already use.
+
+### Image
+
+The task definition pins `var.image_tag` on `aws_ecr_repository.app.repository_url`. Before the
+first run the registry has to hold that tag:
+
+```bash
+REGISTRY=$(terraform -chdir=infra output -raw repository_url)
+docker build -t "${REGISTRY}:local" app/
+aws --endpoint-url http://localhost:4566 ecr get-login-password \
+  | docker login --username AWS --password-stdin "${REGISTRY%%/*}"
+docker push "${REGISTRY}:local"
+```
+
+```text
+local: digest: sha256:519211abf015af686e9d07ff482a4e4dddf6460fc3652caba9cf85b57a34c942 size: 2497
+```
+
+### One run
+
+```bash
+aws --endpoint-url http://localhost:4566 ecs run-task \
+  --cluster conciliacion-batch-lab \
+  --task-definition conciliacion-batch-lab-app \
+  --launch-type FARGATE \
+  --network-configuration 'awsvpcConfiguration={subnets=[subnet-8409913d,subnet-dd772813],securityGroups=[sg-6e8d5db7b3fbafa35],assignPublicIp=DISABLED}' \
+  --query 'tasks[0].taskArn' --output text
+```
+
+Cluster and task definition come from `terraform -chdir=infra output`; the subnets are
+`var.subnet_ids` from `infra/terraform.tfvars` and the security group is
+`terraform output -raw task_security_group_id`. They are written out here because a task
+definition cannot carry them: a `RunTask` call has to supply the network every time.
+
+```bash
+aws --endpoint-url http://localhost:4566 ecs describe-tasks \
+  --cluster conciliacion-batch-lab \
+  --tasks "arn:aws:ecs:us-east-1:000000000000:task/conciliacion-batch-lab/86992a269169468b91aaa18b93c8e08d" \
+  --query 'tasks[0].{last:lastStatus,desired:desiredStatus,reason:stoppedReason,exit:containers[0].exitCode}'
+```
+
+```text
+{"last": "RUNNING", "desired": "RUNNING", "reason": null, "exit": null}
+{"last": "STOPPED", "desired": "STOPPED", "reason": "Essential container in task exited", "exit": 2}
+```
+
+`assignPublicIp=DISABLED` matches the private subnets the platform bootstrap creates: the task
+reaches the internet through the NAT gateway, never through an address of its own.
+
+Exit code 2 is the app refusing to start: the definition supplies `RUN_MODE`/`BUCKET_NAME` and the
+database credentials, but `daily` also needs `PROVIDER_API_KEY`, which arrives per run once 3.7
+wires the scheduler. The definition is correct; the job is simply not fully parameterised yet.
+
+The logs of that run:
+
+```bash
+aws --endpoint-url http://localhost:4566 logs get-log-events \
+  --log-group-name /ecs/conciliacion-batch-lab-app \
+  --log-stream-name app/app/86992a269169468b91aaa18b93c8e08d \
+  --query 'events[].message' --output text
+```
+
+The group is `/ecs/<local.name_prefix>-app` and the stream is `<awslogs-stream-prefix>/<container>/<task id>`,
+which is why the prefix has to be a plain `app`: it becomes part of every path.
+
+```text
+{"timestamp": "2026-11-05T18:31:00.435+00:00", "level": "INFO", "message": "Inicio de la ejecución", "run_id": "750b2dd7-635d-4d47-ab6f-b16d2da9ef3c"}
+{"timestamp": "2026-11-05T18:31:00.436+00:00", "level": "ERROR", "message": "Falta la variable de entorno requerida PROVIDER_API_KEY", "run_id": "750b2dd7-635d-4d47-ab6f-b16d2da9ef3c", "tipo": "ErrorConfiguracion", "codigo_salida": 2}
+```
+
+Two events are enough to prove the log path end to end: the app's own structured line (not just a
+crash trace) landed in the group the execution role was granted, in a stream prefixed `app`.
+
+### The secret reaches the container
+
+Exit code 2 stops the run before the database is touched, so the `secrets` block needs its own
+check. The run below overrides the container command and prints what the agent resolved, never
+the password itself:
+
+```bash
+cat > /tmp/ov.json <<'JSON'
+{
+  "containerOverrides": [
+    {
+      "name": "app",
+      "command": [
+        "python", "-c",
+        "import os;print('RESOLVED', os.environ['DB_HOST'], os.environ['DB_PORT'], os.environ['DB_NAME'], os.environ['DB_USER'], 'pw_chars=%d' % len(os.environ['DB_PASSWORD']))"
+      ]
+    }
+  ]
+}
+JSON
+
+aws --endpoint-url http://localhost:4566 ecs run-task \
+  --cluster conciliacion-batch-lab \
+  --task-definition conciliacion-batch-lab-app \
+  --launch-type FARGATE \
+  --network-configuration 'awsvpcConfiguration={subnets=[subnet-8409913d],securityGroups=[sg-6e8d5db7b3fbafa35],assignPublicIp=DISABLED}' \
+  --overrides file:///tmp/ov.json
+```
+
+```text
+RESOLVED floci 7001 conciliacion conciliacion_admin pw_chars=24
+```
+
+Every value matches the secret JSON (`host`, `port`, `dbname`, `username`, and a 24-character
+password), which is the point of `valueFrom = "${var.db_secret_arn}:<key>::"`: the mapping between
+the secret's key names and the app's variable names is correct, and the password never appears in
+the task definition or in this file.
+
+### What this does not prove
+
+- **Security group rules are not enforced.** Floci has no packet filter: the task reaches the
+  database because the emulator does not route traffic at all. The two egress rules are a
+  statement of intent that only a real VPC verifies.
+- **The task group never converges.** Floci keeps the allow-all egress rule that AWS adds to every
+  new group and does not honour the provider's attempt to revoke it, so `terraform plan` reports
+  one in-place update on `aws_security_group.task` right after a clean apply. On real AWS the same
+  configuration plans clean; re-applying here changes nothing and the diff returns.
+- **The task is not listed once it stops.** `list-tasks` returns running tasks only, so the
+  `describe-tasks` call has to keep the ARN returned by `run-task` and run while the task still
+  exists. An empty `list-tasks` right after a run is not a failure.
+- **The job itself has not run.** Exit code 2 is a configuration error reached before any database
+  or S3 call: nothing here proves the reconciliation logic, the S3 policy on the task role, or the
+  database credentials beyond their shape.
+- **Nothing schedules yet.** There is no service, no EventBridge rule and no dispatcher Lambda, so
+  the subnets, the security group and `assignPublicIp` in this section are still typed by hand.
+  3.6 replaces that with `containerOverrides` sent by the dispatcher.
+
+---
+
 ## What Floci does not emulate
 
 Applies to this piece and grows as the other pieces land.
