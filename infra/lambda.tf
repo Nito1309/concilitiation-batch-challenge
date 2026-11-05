@@ -92,3 +92,14 @@ resource "aws_lambda_function" "notifier" {
   depends_on = [aws_cloudwatch_log_group.notifier]
 }
 
+# EventBridge Scheduler is the only principal allowed to invoke the dispatcher.
+# source_arn narrows it to one schedule: without it, any schedule in any
+# account that learns the function name could start tasks.
+resource "aws_lambda_permission" "scheduler_dispatcher" {
+  statement_id  = "AllowSchedulerInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dispatcher.function_name
+  principal     = "scheduler.amazonaws.com"
+  source_arn    = "arn:aws:scheduler:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.dispatch_schedule_name}"
+}
+
