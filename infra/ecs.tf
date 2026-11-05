@@ -57,6 +57,28 @@ resource "aws_security_group" "task" {
   }
 }
 
+resource "aws_ecs_task_definition" "app" {
+  family                   = "${local.name_prefix}-app"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc" # one ENI per task; no host networking on Fargate
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+
+  # Two roles with two different jobs (iam.tf):
+  #   execution -> the ECS agent: pull image, open log stream, read the secret
+  #   task      -> the app code itself: read and write the bucket
+  execution_role_arn = aws_iam_role.task_execution.arn
+  task_role_arn      = aws_iam_role.task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "app"
+      image     = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+      essential = true
+    }
+  ])
+}
+
 output "cluster_name" {
   description = "Cluster the dispatcher Lambda calls RunTask on (3.6)."
   value       = aws_ecs_cluster.app.name
