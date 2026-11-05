@@ -17,3 +17,14 @@ resource "aws_cloudwatch_log_group" "app" {
   name              = local.log_group_name
   retention_in_days = 14
 }
+
+resource "aws_ecs_cluster" "app" {
+  name = local.name_prefix
+
+  # Cluster-level metrics (cpu/mem per task) in CloudWatch. Off by default
+  # because CloudWatch charges per custom metric.
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+}
