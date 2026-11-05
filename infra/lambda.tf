@@ -19,3 +19,15 @@ data "archive_file" "handlers" {
 # One group per function. Lambda creates "/aws/lambda/<name>" on the first
 # invocation if it is missing -- with no retention, i.e. forever. Creating it
 # here, and having the function depend on it, is what keeps two weeks.
+resource "aws_cloudwatch_log_group" "dispatcher" {
+  name              = "/aws/lambda/${local.name_prefix}-dispatcher"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+resource "aws_cloudwatch_log_group" "notifier" {
+  name              = "/aws/lambda/${local.name_prefix}-notifier"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
