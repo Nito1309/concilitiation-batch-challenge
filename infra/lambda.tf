@@ -66,7 +66,7 @@ resource "aws_lambda_function" "dispatcher" {
 
 resource "aws_lambda_function" "notifier" {
   function_name = "${local.name_prefix}-notifier"
-  description   = "Emails an S3 object arrival (stub: logs the event)."
+  description   = "Emails the outcome of a task: exitCode, stopCode, stoppedReason."
   role          = aws_iam_role.notifier.arn
 
   runtime          = "python3.12"
@@ -82,8 +82,10 @@ resource "aws_lambda_function" "notifier" {
 
   environment {
     variables = {
-      SES_SENDER    = var.notification_email_from
-      SES_RECIPIENT = var.notification_email_to
+      SES_SENDER     = var.notification_email_from
+      SES_RECIPIENT  = var.notification_email_to
+      LOG_GROUP_NAME = local.log_group_name
+      BUCKET_NAME    = local.bucket_name
     }
   }
 
