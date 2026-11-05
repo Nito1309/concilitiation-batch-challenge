@@ -179,3 +179,10 @@ resource "aws_iam_role_policy_attachment" "dispatcher_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Notifier role: emails the run outcome over SES, nothing else.
+resource "aws_iam_role" "notifier" {
+  name               = "${local.name_prefix}-notifier"
+  description        = "Notifier Lambda: email the run outcome over SES."
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
