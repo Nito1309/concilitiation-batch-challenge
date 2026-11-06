@@ -35,6 +35,12 @@ variable "notification_email_from" {
   nullable    = false
 }
 
+variable "notification_email_to" {
+  description = "Where the notifier addresses its mail (SES sends in 3.8)."
+  type        = string
+  nullable    = false
+}
+
 
 # --- from bootstrap-floci: no defaults on purpose ---
 variable "vpc_id" {

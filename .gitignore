@@ -1,4 +1,5 @@
 # Terraform
+.build/
 .terraform/
 *.tfstate
 *.tfstate.backup

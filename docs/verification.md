@@ -390,9 +390,562 @@ the task definition or in this file.
   database credentials beyond their shape.
 - **Nothing schedules yet.** There is no service, no EventBridge rule and no dispatcher Lambda, so
   the subnets, the security group and `assignPublicIp` in this section are still typed by hand.
-  3.6 replaces that with `containerOverrides` sent by the dispatcher.
+  3.6 hands the same three values to the dispatcher Lambda as environment variables, but the
+  `RunTask` call itself lands in Piece 4.
 
 ---
+
+## 3.6 — Dispatcher and notifier Lambdas (`infra/lambda.tf`)
+
+Two functions, one job each, and both handlers are stubs that only log. The proof for this piece
+is therefore not "the batch ran" but "the trigger reaches the function": a direct invoke of the
+dispatcher, and an `inbox/` upload that reaches the notifier with nobody calling it.
+
+### Apply
+
+```bash
+cd infra
+terraform fmt -check -recursive
+terraform validate
+terraform apply
+```
+
+```text
+Apply complete! Resources: 7 added, 1 changed, 0 destroyed.
+
+dispatcher_function_name = "conciliacion-batch-lab-dispatcher"
+notifier_function_name   = "conciliacion-batch-lab-notifier"
+```
+
+Seven is the whole surface: two log groups, two functions, two invoke permissions and one bucket
+notification. The single change belongs to 3.5 — it is the leftover allow-all egress rule in
+`aws_security_group.task` being brought back to what the configuration says, and it is why the
+plan now reports `No changes`.
+
+A later apply can still show two in-place updates on the functions, with an unchanged handler
+and a new `source_code_hash`. `archive_file` hashes the zip, and a zip stores each file's
+modification time, so rewriting a handler with identical bytes produces a different hash and a
+deployment that changes nothing. The hash is trying to express "the code changed"; a timestamp
+leaks into it. Keeping the unzipped source stable between applies is what keeps the plan quiet.
+
+### One invoke
+
+The dispatcher's input in production is a scheduler tick, so the test payload is that shape:
+
+```bash
+cat > sched_event.json <<'EOF'
+{"version":"0","id":"b7c1f0aa-6f2e-4a52-9d1f-2f0f7c7a4b1e","source":"aws.scheduler",
+ "account":"000000000000","time":"2026-11-05T12:00:00Z","region":"us-east-1",
+ "detail-type":"Scheduled Event","detail":{"scheduledTime":"2026-11-05T12:00:00Z"}}
+EOF
+
+aws --endpoint-url http://localhost:4566 lambda invoke \
+  --function-name conciliacion-batch-lab-dispatcher \
+  --cli-binary-format raw-in-base64-out \
+  --payload file://sched_event.json /tmp/dispatcher_out.json
+
+cat /tmp/dispatcher_out.json
+```
+
+```text
+{"ok": true, "procesado": false, "motivo": "stub de 3.6"}
+```
+
+`--cli-binary-format raw-in-base64-out` is not optional: aws-cli v2 base64-encodes `--payload`
+by default, and the API rejects a JSON body it cannot decode (`Invalid base64: "{"version":"0"…`).
+With the flag the file is sent byte for byte, which is what a scheduler would send.
+
+### The event lands in the log
+
+```bash
+aws --endpoint-url http://localhost:4566 logs describe-log-streams \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher
+```
+
+```text
+2026/11/05/[$LATEST]336602ab
+```
+
+```bash
+aws --endpoint-url http://localhost:4566 logs get-log-events \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+  --log-stream-name '2026/11/05/[$LATEST]336602ab' --query 'events[].message' --output text
+```
+
+```text
+[INFO]  Evento recibido: {"version": "0", "id": "b7c1f0aa-…", "source": "aws.scheduler", …}
+[INFO]  Destino: cluster=conciliacion-batch-lab task_definition=conciliacion-batch-lab-app
+        subnets=subnet-8409913d,subnet-dd772813 security_groups=sg-6e8d5db7b3fbafa35
+```
+
+The second line is the real check. It shows that the four environment variables reach the
+function and already hold the values `RunTask` needs — the same cluster, family, subnets and
+group that were typed by hand in 3.5. Nothing reads them yet; that is Piece 4.
+
+The stream name has a fixed shape, `YYYY/MM/DD/[version]<suffix>`: one stream per execution
+environment, and `$LATEST` because the function has no published version or alias. The group is
+`/aws/lambda/<function name>`, the name Lambda would have created on the first invocation — with
+no retention on it. The group exists before the function on purpose, so the function inherits it
+instead of creating an immortal one.
+
+### The bucket calls the notifier
+
+Two uploads, one per prefix, so the filter is tested in both directions:
+
+```bash
+aws --endpoint-url http://localhost:4566 s3api put-object \
+  --bucket conciliacion-batch-lab-b996ee \
+  --key data/2026-11-05/resultado.json --body entrada_prueba.csv
+
+aws --endpoint-url http://localhost:4566 s3api put-object \
+  --bucket conciliacion-batch-lab-b996ee \
+  --key inbox/entrada_prueba.csv --body entrada_prueba.csv
+
+aws --endpoint-url http://localhost:4566 logs describe-log-streams \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-notifier
+```
+
+```text
+2026/11/05/[$LATEST]663c91e9
+```
+
+One stream, not two: the `data/` write produced no invocation at all, which is the point of
+`filter_prefix = local.s3_prefixes.inbox`. The app writes to `data/` and `reports/` on every run,
+and only `inbox/` is a human asking for an email.
+
+```bash
+aws --endpoint-url http://localhost:4566 logs get-log-events \
+  --log-group-name /aws/lambda/conciliacion-batch-lab-notifier \
+  --log-stream-name '2026/11/05/[$LATEST]663c91e9' --query 'events[].message' --output text
+```
+
+```text
+[INFO]  Evento recibido: {"Records": [{"eventSource": "aws:s3", "eventName": "ObjectCreated:Put",
+        "s3": {"bucket": {"name": "conciliacion-batch-lab-b996ee"},
+               "object": {"key": "inbox/entrada_prueba.csv", "size": 25}}}]}
+[INFO]  Correo: de=notifications@example.com para=sre@example.com
+```
+
+No one called the notifier: S3 did, asynchronously, because the bucket notification says so and
+because the function's policy allows this bucket to. `SES_SENDER` and `SES_RECIPIENT` are read
+from the environment, so 3.8 only has to replace the log line with a `send_email` call.
+
+### Who may invoke
+
+```bash
+aws --endpoint-url http://localhost:4566 lambda get-policy \
+  --function-name conciliacion-batch-lab-dispatcher --query Policy --output text
+```
+
+```json
+{"Statement": [{"Sid": "AllowSchedulerInvoke", "Effect": "Allow",
+  "Principal": {"Service": "scheduler.amazonaws.com"},
+  "Action": "lambda:InvokeFunction",
+  "Resource": "arn:aws:lambda:us-east-1:000000000000:function:conciliacion-batch-lab-dispatcher",
+  "Condition": {"ArnLike": {"AWS:SourceArn":
+    "arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily"}}}]}
+```
+
+The condition is the interesting half. Without `source_arn`, every schedule in every account that
+learns the function name could start tasks; with it, exactly one schedule can. That ARN does not
+exist yet — 3.7 creates it — so the name lives in `local.dispatch_schedule_name`, and the schedule
+must be created with it or the invoke is denied.
+
+The S3 permission is the mirror image: `principal = s3.amazonaws.com`, `source_arn` of this
+bucket, and `source_account`, which closes the gap `source_arn` alone leaves (a bucket in another
+account can carry the same name in its own ARN shape).
+
+### Why the notification has `depends_on`
+
+S3 checks the destination when the notification is written: it reads the function's policy to
+confirm that `s3.amazonaws.com` may invoke it. If the permission resource is still pending, the
+bucket rejects the entire configuration with *Unable to validate destination configuration* —
+a failure whose message points at the notification, not at the missing permission. The
+`depends_on` is the difference between a first apply that works and one that does not.
+
+### What this does not prove
+
+- **Nothing calls ECS.** The dispatcher returns after logging; `RunTask` is Piece 4. The four
+  environment variables are proven to arrive, not to be used.
+- **No mail leaves the account.** The notifier logs sender and recipient; SES identities, the
+  send permission and the template are 3.8.
+- **The scheduler does not exist.** The permission names an ARN that only 3.7 will create, so the
+  end-to-end path "schedule fires → dispatcher runs" cannot be observed yet.
+- **The zip carries code, not dependencies.** `archive_file` zips `lambda/` as it is: no
+  `boto3` pin, no layer, no `requirements.txt`. Piece 4 adds whatever the handlers import.
+- **Floci does not enforce IAM.** Every invoke here would succeed with an empty role policy, so
+  the policies are shape, not permission. The two `aws_lambda_permission` resources are stored and
+  readable, but nothing in the emulator tests a denied cross-account call.
+- **The notification is emulator-flavoured.** The delivered record carries
+  `"configurationId": "emulator"` instead of the `inbox-to-notifier` id from the configuration,
+  and `"userIdentity": {"principalId": "AWS:EMULATOR"}`. The filter and the target are real; those
+  two fields are not.
+
+## 3.7 — the daily schedule (`infra/scheduler.tf`)
+
+Five resources to make one function run at 05:00: the schedule itself, the role Scheduler assumes to
+call it, that role's permission, a queue for invocations that never succeed, and the queue's
+permission. The schedule is one block; the rest is what makes a failed tick visible instead of
+silent.
+
+### Apply
+
+```console
+$ terraform -chdir=infra apply
+...
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+```
+
+```console
+$ aws --endpoint-url http://localhost:4566 scheduler get-schedule \
+    --name conciliacion-batch-lab-daily --group-name default
+{
+    "Arn": "arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily",
+    "Description": "Daily reconciliation run at 05:00 America/Mexico_City.",
+    "FlexibleTimeWindow": { "Mode": "OFF" },
+    "GroupName": "default",
+    "Name": "conciliacion-batch-lab-daily",
+    "ScheduleExpression": "cron(0 5 * * ? *)",
+    "ScheduleExpressionTimezone": "America/Mexico_City",
+    "State": "ENABLED",
+    "Target": {
+        "Arn": "arn:aws:lambda:us-east-1:000000000000:function:conciliacion-batch-lab-dispatcher",
+        "DeadLetterConfig": { "Arn": "arn:aws:sqs:us-east-1:000000000000:***" },
+        "RetryPolicy": { "MaximumEventAgeInSeconds": 3600, "MaximumRetryAttempts": 3 },
+        "RoleArn": "arn:aws:iam::000000000000:role/conciliacion-batch-lab-scheduler"
+    }
+}
+```
+
+`State` is `ENABLED` from creation: a schedule that has to be switched on afterwards is a schedule
+someone forgets to switch on. `GroupName` is `default` because 3.6 pinned the invoke permission to
+`.../schedule/default/<name>` — the group is part of that ARN, not a label.
+
+### The timezone is the whole point
+
+```console
+$ TZ=America/Mexico_City date '+%Y-%m-%d %H:%M %Z (UTC%z)'
+2026-11-05 15:05 CST (UTC-0600)
+$ TZ=UTC date '+%Y-%m-%d %H:%M %Z'
+2026-11-05 21:05 UTC
+```
+
+05:00 in Mexico City is 11:00 UTC today. In summer the same city is `CDT` (UTC-5) and 05:00 local
+becomes 10:00 UTC. `cron(0 11 * * ? *)` would therefore be right for half the year and one hour late
+for the other half; `cron(0 5 * * ? *)` with `schedule_expression_timezone` is right every day,
+because Scheduler resolves the zone per run and the expression never changes.
+
+This is also the reason this is an `aws_scheduler_schedule` and not an `aws_cloudwatch_event_rule`: a
+rule's cron is read in UTC and it publishes to a bus for someone else to route, while a schedule
+keeps its own zone, its own retry budget and its own role.
+
+### Two permissions pointing at each other
+
+```console
+$ aws iam get-role-policy --role-name conciliacion-batch-lab-scheduler \
+    --policy-name scheduler-invoke --query PolicyDocument
+{
+  "Statement": [{
+    "Sid": "InvokeDispatcher",
+    "Action": "lambda:InvokeFunction",
+    "Resource": "arn:aws:lambda:...:function:conciliacion-batch-lab-dispatcher",
+    "Condition": { "ArnLike": { "aws:SourceArn": "arn:aws:scheduler:...:schedule/default/conciliacion-batch-lab-daily" } }
+  }]
+}
+```
+
+3.6's `aws_lambda_permission` allows `scheduler.amazonaws.com` on one schedule ARN; this policy
+allows one function, and only when the caller is that same schedule ARN. Either side alone is too
+broad, and the string they agree on is `local.dispatch_schedule_name` — the one thing to check first
+if an invoke is ever denied.
+
+The ARN is written out here instead of referenced from `aws_scheduler_schedule.daily.arn` because
+the schedule's target points back at this role: referencing it would be a cycle. Both sides derive
+from the same local, which is what keeps the copy honest.
+
+### The retry budget
+
+AWS retries a failed schedule target 185 times over 24 hours by default. For a job that runs daily,
+that means a broken invocation from yesterday is still being retried when today's run is due, and
+the DLQ fills behind both. Three attempts inside one hour ends the argument before the next run
+starts; whatever still fails lands in `conciliacion-batch-lab-scheduler-dlq`, which keeps messages
+for 14 days — the same window as the log groups, so a failure and its logs expire together.
+
+### Nothing ticks here
+
+Floci stores a schedule and returns it faithfully, but it does not run a timer. Probed with a
+throwaway `rate(1 minute)` schedule and nothing else:
+
+```console
+$ aws ... scheduler create-schedule --name probe-rate --schedule-expression "rate(1 minute)" ...
+streams before: 3
+streams after:  3        # 140 seconds later
+```
+
+Three log streams before, three after, no invocation. On AWS the same configuration produces a new
+stream within a minute of the cron firing.
+
+### What this does not prove
+
+- **No tick.** The expression, zone and target are stored and readable; the firing is not
+  reproducible in the emulator, so "runs at 05:00" is a claim about the definition only.
+- **The permission was never exercised.** The loop above would need Floci to fire for the
+  `SourceArn` condition to be evaluated at all, and IAM is not enforced here anyway.
+- **The DLQ never received anything.** Its retention, SSE and role permission are readable; an
+  exhausted retry is not producible without a failing target.
+- **`list-schedules` drops fields.** It returned `None` for both `ScheduleExpression` and
+  `ScheduleExpressionTimezone` while `get-schedule` had them. Read a schedule one at a time.
+- **Floci masks the queue name in ARNs.** `DeadLetterConfig.Arn` comes back as
+  `arn:aws:sqs:us-east-1:000000000000:***`, and `get-queue-attributes` masks `QueueArn` the same
+  way, so the DLQ is identifiable by its URL, not by the ARN the API echoes.
+- **The schedule name is load-bearing.** Renaming it in `locals.tf` without re-applying the Lambda
+  permission leaves a schedule whose invoke is denied, and nothing in `get-schedule` shows it.
+
+## 3.8 — the alert path (`infra/notifications.tf`, `infra/outputs.tf`)
+
+The stack stops being a demo here. A task that fails at 05:00 is only useful to know about if
+something tells someone, so this piece is the failure path: ECS publishes a state change, a rule
+keeps the terminal ones, the notifier turns them into an email, and a queue catches the invocations
+that never got that far.
+
+### Apply
+
+```console
+$ terraform -chdir=infra apply
+...
+Apply complete! Resources: 7 added, 3 changed, 0 destroyed.
+
+Outputs:
+
+bucket_name         = "conciliacion-batch-lab-b996ee"
+cluster_name        = "conciliacion-batch-lab"
+dispatcher_name     = "conciliacion-batch-lab-dispatcher"
+notifier_name       = "conciliacion-batch-lab-notifier"
+repository_url      = "000000000000.dkr.ecr.us-east-1.localhost:4566/conciliacion-batch-lab-app"
+task_definition_arn = "arn:aws:ecs:us-east-1:000000000000:task-definition/conciliacion-batch-lab-app:1"
+task_security_group_id = "sg-6e8d5db7b3fbafa35"
+```
+
+The first attempt failed, and the failure is worth keeping:
+
+```console
+Error: listing tags for SESv2 (Simple Email V2) Email Identity
+(arn:aws:ses:us-east-1::identity/notifications@example.com): ...
+BadRequestException: ResourceArn is not the expected format
+```
+
+The identity was created; reading its tags back was not possible, because Floci returns the identity
+ARN with an empty account field (`us-east-1::identity/…`) while `sesv2` in the provider lists tags
+right after create. `aws_ses_email_identity` — the v1 resource, which has nothing to read back —
+creates cleanly on the same emulator, which is why the file uses it.
+
+### The rule
+
+```console
+$ aws --endpoint-url http://localhost:4566 events describe-rule \
+    --name conciliacion-batch-lab-task-stopped
+{
+    "Name": "conciliacion-batch-lab-task-stopped",
+    "State": "ENABLED",
+    "EventPattern": "{\"detail\":{\"clusterArn\":[\"arn:aws:ecs:...:cluster/conciliacion-batch-lab\"],\"lastStatus\":[\"STOPPED\"]},\"detail-type\":[\"ECS Task State Change\"],\"source\":[\"aws.ecs\"]}"
+}
+```
+
+Four fields, each doing one job: `source` and `detail-type` pick the ECS event family, `clusterArn`
+keeps other clusters out, `lastStatus` is the only field that says the task is over. A rule without
+the cluster filter fires for every task in the account — which on a shared account is a mailbox
+nobody reads.
+
+The filter was tested rather than assumed: the same event with `cluster/otro-cluster` was published
+and produced no new log stream (2 before, 2 after), while the real cluster's event produced one.
+
+### The permission, and why the rule alone is not enough
+
+```console
+$ aws lambda get-policy --function-name conciliacion-batch-lab-notifier
+[{"Sid": "AllowS3InboxInvoke",          "Principal": {"Service": "s3.amazonaws.com"},
+  "SourceArn": "arn:aws:s3:::conciliacion-batch-lab-b996ee"},
+ {"Sid": "AllowEventBridgeTaskStopped", "Principal": {"Service": "events.amazonaws.com"},
+  "SourceArn": "arn:aws:events:...:rule/conciliacion-batch-lab-task-stopped"}]
+```
+
+A rule that matches and a target that exists still invoke nothing if the function's resource policy
+does not name the rule. That is the quietest failure in this stack: no error anywhere, the event just
+falls on the floor. Two statements now, one per trigger, each pinned to a `source_arn`.
+
+### The email
+
+Two events published on the default bus, both this cluster, both `STOPPED`:
+
+```console
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-notifier
+[INFO] Aviso: [conciliación] FALLA · salida 2
+[INFO] Enviado: message_id=3fe5190c-7c05-41d3-857f-74ee1a4814d4
+[INFO] Aviso: [conciliación] OK · ejecución correcta
+[INFO] Enviado: message_id=50881d20-5f45-48d4-9dc3-f93e5e6e40de
+```
+
+The subject is the decision (open it or not); the body carries `taskArn`, `clusterArn`, `stopCode`,
+`stoppedReason` and the container's `exitCode` with its meaning from `app/README.md`, then the three
+things to check in order: the task's log stream, the task definition's variables and secret, and the
+input file if the exit code was 3.
+
+An object uploaded to `inbox/` during the same window produced no email:
+
+```console
+[INFO] Evento ignorado: detail-type=None
+```
+
+The handler refuses to treat an S3 event as a result — an upload is work to do, not news — so the
+notification stays tied to what actually ran.
+
+### The queue
+
+```console
+$ aws sqs get-queue-attributes --queue-url .../conciliacion-batch-lab-notifier-dlq
+ApproximateNumberOfMessages: 0
+```
+
+Two retries inside one hour, then the event goes to the queue
+(`MaximumRetryAttempts: 2`, `MaximumEventAgeInSeconds: 3600`, destination
+`arn:aws:sqs:…:***` — Floci masks the queue name in ARNs it returns).
+
+`redrive_policy` is deliberately absent, although the issue asked for it: `maxReceiveCount` lives on
+a queue that a consumer reads, and this queue is the destination. Lambda writes, a human reads, and
+the message has been received at most once, so a receive count would never reach its limit. The
+redrive after a fix is a `start-message-move-task`, not a policy. Putting the policy on anyway would
+have been configuration that looks right and does nothing.
+
+### What this does not prove
+
+- **The queue never received anything.** Its retention, SSE, role permission and the function's
+  failure destination are all readable, but producing a message would need the notifier to crash
+  after EventBridge delivered the event, which nothing here triggers.
+- **SES accepted the message, it did not deliver it.** Floci verifies the identity automatically
+  (`VerificationStatus: Success` — no mailbox was ever confirmed) and returns a message id. What
+  happened after that is not observable here.
+- **The retries were never exercised.** A second attempt only happens when the first throws.
+- **The S3 trigger on `inbox/` still exists** and now lands in the handler's ignore branch. Removing
+  it belongs with the piece that makes an upload start a task, not with this one.
+
+Earlier sections still show `s3_bucket_name` and `dispatcher_function_name`: those were the output
+names at the time. This piece renamed them to the four the issue asks for.
+
+## 3.9 — the three triggers, and the guide the reviewer reads (`infra/README.md`, `docs/flow.svg`)
+
+### First, a defect the documentation exposed
+
+Writing the "validate the three events" steps meant writing the third one down, and the third one did
+not exist. `inbox/` was still wired to the **notifier** — the shape a 3.6 commit left behind, when the
+notifier was still the S3 stub. Since 3.8 the notifier ignores anything that is not an ECS event, so
+a file dropped in `inbox/` was being delivered to a function that could only say
+`Evento ignorado`. The feed path had no route to the dispatcher at all.
+
+Fixed before documenting, in two commits: the bucket notification now targets the dispatcher, and its
+resource policy was renamed to match (`s3_dispatcher`, still pinned to this bucket and this account).
+The notifier keeps only the EventBridge rule from 3.8.
+
+```
+Plan: 1 to add, 4 to change, 1 to destroy.
+aws_lambda_permission.s3_dispatcher: Creation complete
+aws_lambda_permission.s3_notifier: Destruction complete
+aws_s3_bucket_notification.data: Modifications complete
+```
+
+### The dispatcher learns the mode from the event
+
+`_traducir` reads the shape rather than a configuration flag: `Records[0].s3` means `feed` with
+`INPUT_KEY`, `source == "aws.scheduler"` means `daily` with nothing, anything else is `on_demand`
+with the payload re-serialised as a string. Three triggers, no per-trigger plumbing, and the same
+function name in every path.
+
+### Event 1 — daily
+
+```
+$ aws scheduler get-schedule --name conciliacion-batch-lab-daily \
+    --query '{cron:ScheduleExpression, tz:ScheduleExpressionTimezone, window:FlexibleTimeWindow.Mode}'
+{
+    "cron": "cron(0 5 * * ? *)",
+    "tz": "America/Mexico_City",
+    "window": "OFF"
+}
+
+$ aws lambda invoke --function-name conciliacion-batch-lab-dispatcher \
+    --payload '{"source":"aws.scheduler","detail-type":"Scheduled Event","resources":["arn:aws:scheduler:us-east-1:000000000000:schedule/default/conciliacion-batch-lab-daily"]}' \
+    --cli-binary-format raw-in-base64-out /tmp/out.json >/dev/null && cat /tmp/out.json
+{"ok": true, "run_mode": "daily", "variables": {}, "procesado": false, "motivo": "RunTask es Piece 4"}
+```
+
+`variables` is empty on purpose: a tick carries no data, so the container reconciles yesterday.
+
+### Event 2 — on demand
+
+```
+$ aws lambda invoke --function-name conciliacion-batch-lab-dispatcher \
+    --payload '{"fecha_inicio":"2026-10-20","fecha_fin":"2026-10-20"}' \
+    --cli-binary-format raw-in-base64-out /tmp/out.json >/dev/null && cat /tmp/out.json
+{"ok": true, "run_mode": "on_demand", "variables": {"PAYLOAD": "{\"fecha_inicio\": \"2026-10-20\", \"fecha_fin\": \"2026-10-20\"}"}, "procesado": false, "motivo": "RunTask es Piece 4"}
+```
+
+### Event 3 — a file in `inbox/`
+
+```
+$ aws s3 cp app/ejemplos/feed-2026-10-20.csv "s3://conciliacion-batch-lab-b996ee/inbox/feed-2.csv"
+$ sleep 15
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+    --query 'events[-2:].message' --output text | tr '\t' '\n'
+[INFO] 2026-11-05T21:56:32.877Z 5d8b5f54-… RUN_MODE=feed variables={"INPUT_KEY": "inbox/feed-2.csv"}
+[INFO] 2026-11-05T21:56:32.877Z 5d8b5f54-… Destino: cluster=conciliacion-batch-lab task_definition=conciliacion-batch-lab-app subnets=subnet-8409913d,subnet-dd772813 security_groups=sg-6e8d5db7b3fbafa35
+```
+
+Nobody invoked the function: S3 did, through the notification and the resource policy.
+
+**A race worth recording.** The first upload after `apply` produced no invocation at all; the second,
+identical one, produced the line above. The bucket notification configuration read back correctly
+between the two, so this is the emulator registering the notification asynchronously rather than the
+config being wrong — the `depends_on` for the permission is in place. Practically: after an `apply`
+that changes the notification, expect the first object to be swallowed and re-upload. The guide says
+so, because a reviewer would otherwise read it as a broken trigger.
+
+Control, same command, different prefix:
+
+```
+$ aws s3 cp app/ejemplos/feed-2026-10-20.csv "s3://conciliacion-batch-lab-b996ee/data/control.csv"
+$ aws logs describe-log-streams --log-group-name /aws/lambda/conciliacion-batch-lab-dispatcher \
+    --query 'length(logStreams)' --output text
+4
+```
+
+Same count before and after: `data/` is written by the app on every run and must not feed itself
+back in.
+
+### The notifier, unchanged and re-proved
+
+```
+$ aws events put-events --entries file:///tmp/stopped.json
+5e6c6d14-f3c3-4af9-b6e7-c2b7b64f6171
+
+[INFO] 2026-11-05T21:58:19.793Z f613e38e-… Aviso: [conciliación] FALLA · salida 2
+[INFO] 2026-11-05T21:58:20.033Z f613e38e-… Enviado: message_id=5011447e-fc4f-440e-b4b7-0deafeeb6762
+
+$ # the same event with cluster/otro-cluster
+$ aws events put-events --entries file:///tmp/other.json
+233f5729-c3fd-4bef-ac6c-fbab097b4a63
+$ aws logs filter-log-events --log-group-name /aws/lambda/conciliacion-batch-lab-notifier \
+    --query 'events[-1].message' --output text
+[INFO] 2026-11-05T21:58:20.033Z f613e38e-… Enviado: message_id=5011447e-fc4f-440e-b4b7-0deafeeb6762
+```
+
+The last notifier event is still the FALLA one: the foreign-cluster event was accepted by the bus and
+never reached the function. That is the rule's `clusterArn` filter doing the work, measured by the
+absence of a new log entry rather than by reading the pattern back.
+
+### What this piece does not prove
+
+The dispatcher still returns before `RunTask`, so no event above starts a container; that is the next
+piece, and the manual `RunTask` in §3.5 is the evidence that the task definition, the subnets and the
+security group are correct. Nothing here exercises IAM enforcement, SES delivery or the DLQ, for the
+reasons listed at the end of this file.
 
 ## What Floci does not emulate
 

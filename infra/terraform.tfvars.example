@@ -16,6 +16,7 @@ db_secret_arn        = "<secret-arn>"
 db_endpoint          = "<host>:<port>"
 
 notification_email_from = "<verified-sender>"
+notification_email_to   = "<inbox-owner>"
 
 tags = { Owner = "candidate" }
 

@@ -15,6 +15,11 @@ locals {
   # IAM + ECS
   log_group_name = "/ecs/${local.name_prefix}-app"
 
+  # EventBridge Scheduler
+  # 3.6 pins the dispatcher's invoke permission to this schedule ARN, so 3.7
+  # must create the schedule with exactly this name in the "default" group.
+  dispatch_schedule_name = "${local.name_prefix}-daily"
+
   # Email notifier will iterate it
   s3_prefixes = {
     inbox   = "inbox/"

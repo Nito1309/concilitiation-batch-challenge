@@ -1,0 +1,118 @@
+# =============================================================================
+# One schedule: every day at 05:00 in Mexico City.
+#
+# Scheduler, not an EventBridge rule. A rule listens on a bus and its cron is
+# read in UTC; a schedule carries its own timezone, retries and role, and
+# invokes the target directly. 05:00 CDMX is 11:00 UTC in winter and 10:00 in
+# summer, so a UTC cron would run the batch one or two hours off half the year.
+# =============================================================================
+
+# The role Scheduler assumes. Separate from the dispatcher's role on purpose:
+# that one says what the function may do once it is running, this one says who
+# may start it.
+data "aws_iam_policy_document" "scheduler_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "scheduler" {
+  name               = "${local.name_prefix}-scheduler"
+  description        = "EventBridge Scheduler: invoke the dispatcher on time."
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+# One function, one action. The condition is the confused-deputy guard: this
+# role only works for this schedule, not for any other schedule that manages to
+# assume it.
+#
+# The schedule ARN is built from local.dispatch_schedule_name rather than from
+# aws_scheduler_schedule.daily.arn, because the schedule's target already points
+# at this role and referencing it back would be a cycle. The 3.6 invoke
+# permission is pinned to the same string, so the two cannot drift apart.
+data "aws_iam_policy_document" "scheduler_invoke" {
+  statement {
+    sid       = "InvokeDispatcher"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.dispatcher.arn]
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:aws:scheduler:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.dispatch_schedule_name}"
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_invoke" {
+  name   = "scheduler-invoke"
+  role   = aws_iam_role.scheduler.name
+  policy = data.aws_iam_policy_document.scheduler_invoke.json
+}
+
+# Where an invocation that never succeeded ends up. Scheduler retries on its own
+# before giving up, so without a queue a lost run leaves no trace anywhere.
+resource "aws_sqs_queue" "scheduler_dlq" {
+  name                      = "${local.name_prefix}-scheduler-dlq"
+  message_retention_seconds = 1209600 # 14 days, same as the log groups
+  sqs_managed_sse_enabled   = true
+}
+
+data "aws_iam_policy_document" "scheduler_dlq" {
+  statement {
+    sid       = "DeadLetterWrites"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.scheduler_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_dlq" {
+  name   = "scheduler-dlq"
+  role   = aws_iam_role.scheduler.name
+  policy = data.aws_iam_policy_document.scheduler_dlq.json
+}
+
+resource "aws_scheduler_schedule" "daily" {
+  name        = local.dispatch_schedule_name
+  description = "Daily reconciliation run at 05:00 America/Mexico_City."
+
+  # Explicit because 3.6 pins the invoke permission to
+  # .../schedule/default/<name>. Any other group is a different ARN, and the
+  # invoke would be denied with nothing in the log pointing at the group.
+  group_name = "default"
+
+  schedule_expression          = "cron(0 5 * * ? *)"
+  schedule_expression_timezone = "America/Mexico_City"
+
+  # OFF means fire at 05:00 exactly. The default window lets the run start up to
+  # ten minutes late, which is harmless for most jobs and wrong for one whose
+  # output someone reads at 05:30.
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.dispatcher.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    # Three attempts inside one hour. The AWS default is 185 attempts over 24
+    # hours, which for a daily job means retrying yesterday's run while today's
+    # is already due.
+    retry_policy {
+      maximum_retry_attempts       = 3
+      maximum_event_age_in_seconds = 3600
+    }
+
+    # Reached only after the retries are exhausted.
+    dead_letter_config {
+      arn = aws_sqs_queue.scheduler_dlq.arn
+    }
+  }
+}

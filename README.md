@@ -1,5 +1,8 @@
 # Ejercicio técnico: `conciliacion-batch`
 
+> **Entrega:** la guía para levantarlo y validarlo (los tres disparadores y el correo) está en
+> [`infra/README.md`](infra/README.md); el diagrama de lo construido, en [`docs/flow.svg`](docs/flow.svg).
+
 ## Cómo funciona este ejercicio
 
 1. **Antes de la entrevista** recibes acceso de lectura a este repositorio. Léelo con calma; no necesitas instalar ni construir nada todavía.
