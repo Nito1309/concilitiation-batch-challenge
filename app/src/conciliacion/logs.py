@@ -1,4 +1,4 @@
-"""Logs estructurados en JSON, una línea por evento, a stdout."""
+"""Structured JSON logs, one line per event, to stdout."""
 
 import json
 import sys

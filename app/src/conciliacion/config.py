@@ -1,4 +1,4 @@
-"""Lectura y validación de la configuración desde variables de entorno."""
+"""Reading and validating the configuration from environment variables."""
 
 import json
 import os

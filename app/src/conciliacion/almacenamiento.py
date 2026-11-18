@@ -1,4 +1,4 @@
-"""Lectura y escritura de objetos en S3."""
+"""Reading and writing S3 objects."""
 
 import json
 

@@ -1,29 +1,29 @@
 variable "region" {
-  description = "Región de AWS."
+  description = "AWS region."
   type        = string
   default     = "us-east-1"
 }
 
 variable "name" {
-  description = "Prefijo para los nombres de los recursos."
+  description = "Prefix for the resource names."
   type        = string
   default     = "conciliacion-batch"
 }
 
 variable "vpc_cidr" {
-  description = "Bloque CIDR de la VPC."
+  description = "CIDR block of the VPC."
   type        = string
   default     = "10.20.0.0/16"
 }
 
 variable "db_name" {
-  description = "Nombre de la base de datos."
+  description = "Database name."
   type        = string
   default     = "conciliacion"
 }
 
 variable "db_username" {
-  description = "Usuario administrador de la base de datos."
+  description = "Database administrator user."
   type        = string
   default     = "conciliacion_admin"
 }

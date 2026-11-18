@@ -1,7 +1,7 @@
-"""Cliente simulado del proveedor de pagos.
+"""Simulated payment provider client.
 
-No existe un proveedor real: las transacciones se generan de forma determinista
-a partir de la fecha, para que dos ejecuciones sobre el mismo día den lo mismo.
+There is no real provider: transactions are generated deterministically from the
+date, so two runs over the same day return the same data.
 """
 
 import random

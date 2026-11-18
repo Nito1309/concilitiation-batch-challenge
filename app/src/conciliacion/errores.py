@@ -1,4 +1,4 @@
-"""Errores de la aplicación. Cada tipo corresponde a un código de salida."""
+"""Application errors. Each type maps to one exit code."""
 
 
 class ErrorAplicacion(Exception):
@@ -6,18 +6,18 @@ class ErrorAplicacion(Exception):
 
 
 class ErrorConfiguracion(ErrorAplicacion):
-    """Falta una variable de entorno o tiene un valor inválido."""
+    """An environment variable is missing or holds an invalid value."""
 
     codigo_salida = 2
 
 
 class ErrorEntrada(ErrorAplicacion):
-    """El payload o el archivo de entrada no son válidos."""
+    """The payload or the input file is not valid."""
 
     codigo_salida = 3
 
 
 class ErrorDependencia(ErrorAplicacion):
-    """No se pudo usar S3, la base de datos o el proveedor."""
+    """S3, the database or the provider could not be used."""
 
     codigo_salida = 4

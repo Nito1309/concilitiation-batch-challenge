@@ -1,24 +1,24 @@
 output "vpc_id" {
-  description = "ID de la VPC."
+  description = "VPC ID."
   value       = aws_vpc.this.id
 }
 
 output "subnet_ids" {
-  description = "IDs de las subnets privadas (salida a internet por NAT)."
+  description = "IDs of the private subnets (internet egress through NAT)."
   value       = aws_subnet.private[*].id
 }
 
 output "db_endpoint" {
-  description = "Endpoint de PostgreSQL (host:puerto)."
+  description = "PostgreSQL endpoint (host:port)."
   value       = aws_db_instance.this.endpoint
 }
 
 output "db_secret_arn" {
-  description = "ARN del secreto con las credenciales de la base de datos."
+  description = "ARN of the secret holding the database credentials."
   value       = aws_secretsmanager_secret.db.arn
 }
 
 output "db_security_group_id" {
-  description = "ID del security group de la base de datos."
+  description = "ID of the database security group."
   value       = aws_security_group.db.id
 }

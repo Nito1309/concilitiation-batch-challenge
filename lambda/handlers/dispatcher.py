@@ -1,17 +1,17 @@
-"""Dispatcher: punto de entrada de las tres formas de ejecutar el batch.
+"""Dispatcher: entry point for the three ways of running the batch.
 
-Una sola función atiende los tres disparadores porque el trabajo es el mismo:
-traducir lo que llegó a los parámetros que la tarea necesita.
+A single function serves all three triggers because the work is the same:
+translate whatever arrived into the parameters the task needs.
 
     Scheduler  -> RUN_MODE=daily
     AWS CLI    -> RUN_MODE=on_demand + PAYLOAD
     inbox/     -> RUN_MODE=feed + INPUT_KEY
 
-Los eventos no se distinguen por un flag de configuración sino por su forma, así
-que añadir un disparador no obliga a tocar los otros dos.
+Events are told apart by their shape rather than by a configuration flag, so
+adding a trigger does not force changes in the other two.
 
-`RunTask` todavía no se llama (Piece 4): lo que esta pieza prueba es que cada
-disparador llega aquí con sus datos. La respuesta lo dice en `procesado`.
+`RunTask` is not called yet (Piece 4): what this piece proves is that every
+trigger reaches this point with its data. The response says so in `procesado`.
 """
 
 import json
@@ -23,10 +23,10 @@ logger.setLevel(logging.INFO)
 
 
 def _traducir(event):
-    """Devuelve (RUN_MODE, variables de la tarea) para el evento recibido.
+    """Returns (RUN_MODE, task environment variables) for the event received.
 
-    S3 manda `Records` con `s3`, Scheduler manda `source: aws.scheduler`, y la
-    CLI manda el payload del usuario tal cual.
+    S3 sends `Records` with `s3`, Scheduler sends `source: aws.scheduler`, and
+    the CLI sends the user payload as is.
     """
     if isinstance(event, dict) and event.get("Records"):
         s3 = event["Records"][0].get("s3")
@@ -36,13 +36,13 @@ def _traducir(event):
     if isinstance(event, dict) and event.get("source") == "aws.scheduler":
         return "daily", {}
 
-    # PAYLOAD viaja como string JSON: RunTask solo acepta strings en
-    # `environmentOverrides`, y así el mismo valor sirve en los dos caminos.
+    # PAYLOAD travels as a JSON string: RunTask only accepts strings in
+    # `environmentOverrides`, and this way the same value works on both paths.
     if isinstance(event, dict) and event:
         return "on_demand", {"PAYLOAD": json.dumps(event)}
 
-    # Sin payload, `on_demand` concilia el día anterior: es el
-    # comportamiento por defecto del contenedor, no una decisión de aquí.
+    # Without a payload, `on_demand` reconciles the previous day: that is the
+    # container's default behaviour, not a decision made here.
     return "on_demand", {}
 
 

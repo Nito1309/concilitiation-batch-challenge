@@ -1,4 +1,4 @@
-"""Punto de entrada: ejecuta el modo indicado en RUN_MODE y devuelve el código de salida."""
+"""Entry point: runs the mode set in RUN_MODE and returns the exit code."""
 
 import sys
 import time

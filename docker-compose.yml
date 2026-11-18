@@ -3,7 +3,7 @@ services:
     image: floci/floci:2.3.0
     container_name: floci
     ports:
-      - "4566:4566"            # API de AWS
+      - "4566:4566"            # AWS API
       - "7001-7099:7001-7099"  # PostgreSQL (RDS)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

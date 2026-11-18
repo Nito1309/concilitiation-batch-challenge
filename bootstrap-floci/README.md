@@ -1,59 +1,59 @@
 # bootstrap-floci
 
-Crea en Floci los recursos que **en AWS ya existen** y que tu solución recibe como variables:
+Creates, on Floci, the resources that **already exist on AWS** and that your solution receives as variables:
 
-- VPC con subnets privadas (salida a internet por NAT).
-- Base de datos PostgreSQL.
-- Secreto en Secrets Manager con las credenciales de la base de datos.
-- Security group de la base de datos.
+- VPC with private subnets (internet egress through NAT).
+- PostgreSQL database.
+- Secret in Secrets Manager with the database credentials.
+- Database security group.
 
-Solo se usa en tu entorno local. No forma parte de tu solución ni necesitas modificarlo.
+It is only used in your local environment. It is not part of your solution and you do not need to modify it.
 
-## Requisitos
+## Requirements
 
-- Docker y Docker Compose
+- Docker and Docker Compose
 - Terraform 1.16.x
 - AWS CLI v2
-- jq (opcional, para leer el secreto)
+- jq (optional, to read the secret)
 
-Terraform y la AWS CLI también vienen en el contenedor de `.docker/` (ver el README principal). Dentro del contenedor, Floci está en `http://floci:4566`, no en `localhost`.
+Terraform and the AWS CLI also ship in the `.docker/` container (see the main README). Inside the container, Floci is at `http://floci:4566`, not on `localhost`.
 
-## Uso
+## Usage
 
-Desde la raíz del repositorio:
+From the repository root:
 
 ```bash
-# 1. Levantar Floci
+# 1. Start Floci
 docker compose up -d
 
-# 2. Apuntar Terraform y la AWS CLI a Floci (Floci acepta cualquier credencial)
+# 2. Point Terraform and the AWS CLI at Floci (Floci accepts any credentials)
 export AWS_ENDPOINT_URL=http://localhost:4566
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_REGION=us-east-1
 
-# 3. Crear los recursos
+# 3. Create the resources
 cd bootstrap-floci
 terraform init
 terraform apply
 
-# 4. Consultar los identificadores
+# 4. Read the identifiers
 terraform output
 ```
 
-La base de datos tarda alrededor de un minuto y medio en crearse.
+The database takes about a minute and a half to be created.
 
 ## Outputs
 
-| Output | Descripción |
+| Output | Description |
 |---|---|
-| `vpc_id` | ID de la VPC |
-| `subnet_ids` | IDs de las subnets privadas |
-| `db_endpoint` | Endpoint de PostgreSQL (`host:puerto`) |
-| `db_secret_arn` | ARN del secreto con las credenciales de la base de datos |
-| `db_security_group_id` | ID del security group de la base de datos |
+| `vpc_id` | ID of the VPC |
+| `subnet_ids` | IDs of the private subnets |
+| `db_endpoint` | PostgreSQL endpoint (`host:port`) |
+| `db_secret_arn` | ARN of the secret holding the database credentials |
+| `db_security_group_id` | ID of the database security group |
 
-El secreto es un JSON con este formato:
+The secret is a JSON document with this shape:
 
 ```json
 {
@@ -66,9 +66,9 @@ El secreto es un JSON con este formato:
 }
 ```
 
-## Conectarse a la base de datos
+## Connecting to the database
 
-El host `floci` se resuelve dentro de la red Docker `conciliacion-batch`, que es donde Floci corre los contenedores (tareas de ECS, Lambdas). Desde tu máquina usa `localhost:7001`:
+The host `floci` resolves inside the `conciliacion-batch` Docker network, which is where Floci runs its containers (ECS tasks, Lambdas). From your machine use `localhost:7001`:
 
 ```bash
 PGPASSWORD=$(aws secretsmanager get-secret-value \
@@ -77,7 +77,7 @@ PGPASSWORD=$(aws secretsmanager get-secret-value \
 psql -h localhost -p 7001 -U conciliacion_admin -d conciliacion
 ```
 
-## Destruir
+## Destroying
 
 ```bash
 terraform destroy
