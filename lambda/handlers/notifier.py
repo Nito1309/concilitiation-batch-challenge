@@ -1,13 +1,13 @@
-"""Notifier: correo con el resultado de una ejecución del batch.
+"""Notifier: email with the result of a batch run.
 
-EventBridge invoca esta función cuando una tarea del clúster llega a `STOPPED`.
-El evento es el cambio de estado de ECS, y ahí están las tres piezas que dicen
-qué pasó: `stopCode` (por qué la detuvo ECS), `stoppedReason` (el detalle que
-escribió ECS) y el `exitCode` del contenedor (lo que decidió la aplicación).
+EventBridge invokes this function when a task in the cluster reaches `STOPPED`.
+The event is the ECS state change, and it carries the three pieces that say what
+happened: `stopCode` (why ECS stopped it), `stoppedReason` (the detail ECS
+wrote) and the container's `exitCode` (what the application decided).
 
-Se leen en ese orden porque es el orden de la investigación: el código de salida
-dice si hay algo que mirar, la razón del stop dice si fue el contenedor o la
-infraestructura, y los logs ya son el detalle.
+They are read in that order because that is the order of the investigation: the
+exit code says whether there is anything to look at, the stop reason says whether
+it was the container or the infrastructure, and the logs hold the detail.
 """
 
 import logging
@@ -18,8 +18,8 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Tabla de app/README.md. El contenedor ya decidió qué pasó; aquí sólo se
-# traduce a algo que se entienda sin abrir el código.
+# Table from app/README.md. The container already decided what happened; here it
+# is only turned into something readable without opening the code.
 SALIDAS = {
     0: "ejecución correcta",
     1: "error inesperado",
@@ -28,17 +28,17 @@ SALIDAS = {
     4: "falla de una dependencia (S3, base de datos o proveedor)",
 }
 
-# La tarea nombra su log group con su propio id, así que el correo puede llevar
-# a los logs sin que nadie tenga que buscarlos.
+# The task names its log group with its own id, so the email can link to the
+# logs without anyone having to search for them.
 LOG_GROUP = os.environ.get("LOG_GROUP_NAME")
 BUCKET = os.environ.get("BUCKET_NAME")
 
 
 def handler(event, context):
-    """Arma el correo a partir del cambio de estado y lo manda por SES."""
+    """Builds the email from the state change and sends it through SES."""
     if event.get("detail-type") != "ECS Task State Change":
-        # No todo disparo es un resultado: un objeto nuevo en inbox/ es trabajo
-        # por hacer, no una noticia que dar.
+        # Not every trigger is a result: a new object in inbox/ is work to do,
+        # not news to report.
         logger.info("Evento ignorado: detail-type=%s", event.get("detail-type"))
         return {"ok": True, "enviado": False, "motivo": "no es un cambio de estado de ECS"}
 
@@ -64,7 +64,7 @@ def handler(event, context):
 
 
 def _asunto(codigo):
-    """Una línea que ya dice si hay que abrir el correo hoy."""
+    """One line that already says whether the email needs opening today."""
     if codigo is None:
         return "[conciliación] SIN EJECUTAR · la tarea no arrancó"
     if codigo == 0:
@@ -73,7 +73,7 @@ def _asunto(codigo):
 
 
 def _cuerpo(detail, contenedores, codigo):
-    """Texto plano: se lee en el móvil y no depende de un cliente de correo."""
+    """Plain text: it reads on a phone and does not depend on a mail client."""
     lineas = [
         f"Tarea:      {detail.get('taskArn', '?')}",
         f"Clúster:    {detail.get('clusterArn', '?')}",
@@ -108,6 +108,6 @@ def _salida(codigo):
 
 
 def _logs(detail):
-    """El stream de la tarea se llama como su id; con eso basta para llegar."""
+    """The task stream is named after its id; that is enough to reach it."""
     corto = detail.get("taskArn", "").rsplit("/", 1)[-1] or "?"
     return f"{LOG_GROUP or '/ecs/<cluster>-app'} · stream app/{corto}"

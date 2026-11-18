@@ -1,4 +1,4 @@
-"""Lectura y validación de archivos de feed (CSV)."""
+"""Reading and validating feed files (CSV)."""
 
 import csv
 import io

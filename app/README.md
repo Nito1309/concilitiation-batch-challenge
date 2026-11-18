@@ -1,84 +1,88 @@
-# app: job batch `conciliacion-batch`
+# app: `conciliacion-batch` batch job
 
-Job que **arranca, hace su trabajo y termina**. No es un servidor: no expone puertos.
+A job that **starts, does its work and exits**. It is not a server: it exposes no ports.
 
-El proveedor de pagos está simulado (las transacciones se generan a partir de la fecha), así que no necesitas credenciales reales.
+The payment provider is simulated (transactions are generated from the date), so you do not need real credentials.
 
-## Modos de ejecución
+## Run modes
 
-| `RUN_MODE` | Qué hace |
+| `RUN_MODE` | What it does |
 |---|---|
-| `daily` | Concilia el día anterior: compara las transacciones del proveedor contra los movimientos internos y genera un reporte. |
-| `on_demand` | Igual que `daily`, pero para el rango de fechas indicado en `PAYLOAD`. |
-| `feed` | Lee un archivo CSV de movimientos desde S3 (`INPUT_KEY`), lo valida y carga los movimientos a la base de datos. No genera reporte. |
+| `daily` | Reconciles the previous day: compares the provider's transactions against the internal movements and produces a report. |
+| `on_demand` | Same as `daily`, but for the date range given in `PAYLOAD`. |
+| `feed` | Reads a CSV file of movements from S3 (`INPUT_KEY`), validates it and loads the movements into the database. Produces no report. |
 
-## Variables de entorno
+## Environment variables
 
-| Variable | Modos | Descripción |
+| Variable | Modes | Description |
 |---|---|---|
-| `RUN_MODE` | todos | `daily`, `on_demand` o `feed` |
-| `BUCKET_NAME` | todos | Bucket donde la app lee y escribe |
-| `DB_HOST` | todos | Host de PostgreSQL |
-| `DB_PORT` | todos | Puerto de PostgreSQL (opcional, por defecto `5432`) |
-| `DB_NAME` | todos | Nombre de la base de datos |
-| `DB_USER` | todos | Usuario de la base de datos |
-| `DB_PASSWORD` | todos | Contraseña de la base de datos |
-| `PROVIDER_API_KEY` | `daily`, `on_demand` | API key del proveedor. La app solo valida que exista |
-| `PAYLOAD` | `on_demand` | JSON opcional con el rango a conciliar (máximo 31 días). Si no se envía, se concilia el día anterior |
-| `INPUT_KEY` | `feed` | Key del archivo CSV dentro del bucket |
+| `RUN_MODE` | all | `daily`, `on_demand` or `feed` |
+| `BUCKET_NAME` | all | Bucket the app reads from and writes to |
+| `DB_HOST` | all | PostgreSQL host |
+| `DB_PORT` | all | PostgreSQL port (optional, defaults to `5432`) |
+| `DB_NAME` | all | Database name |
+| `DB_USER` | all | Database user |
+| `DB_PASSWORD` | all | Database password |
+| `PROVIDER_API_KEY` | `daily`, `on_demand` | Provider API key. The app only checks that it is present |
+| `PAYLOAD` | `on_demand` | Optional JSON with the range to reconcile (31 days maximum). If omitted, the previous day is reconciled |
+| `INPUT_KEY` | `feed` | Key of the CSV file inside the bucket |
 
-Los datos de conexión a la base de datos están en el secreto de credenciales que ya existe (`host`, `port`, `dbname`, `username`, `password`).
+The database connection data lives in the credentials secret that already exists (`host`, `port`, `dbname`, `username`, `password`).
 
-La app usa el SDK de AWS para Python (boto3), así que toma credenciales y región de la cadena estándar del SDK.
+The app uses the AWS SDK for Python (boto3), so it takes credentials and region from the standard SDK chain.
 
-Ejemplo de `PAYLOAD` (también en `ejemplos/payload.json`):
+Example `PAYLOAD` (also in `ejemplos/payload.json`):
 
 ```json
 {"fecha_inicio": "2026-10-20", "fecha_fin": "2026-10-20"}
 ```
 
-## Formato del archivo de feed
+The payload keys `fecha_inicio` / `fecha_fin` are part of the application contract and keep their Spanish names.
 
-CSV en UTF-8 con este encabezado exacto:
+## Feed file format
+
+CSV in UTF-8 with this exact header:
 
 ```csv
 referencia,fecha,monto,moneda
 TX-20261020-0001,2026-10-20,1249.98,MXN
 ```
 
-Ejemplo completo en `ejemplos/feed-2026-10-20.csv`. Sus movimientos son del 2026-10-20, así que una ejecución `on_demand` sobre esa fecha muestra conciliadas, diferencias de monto y faltantes.
+The header is the contract between operations and the application: it is expected literally as written, so it is not translated.
 
-## Qué escribe
+A full example is in `ejemplos/feed-2026-10-20.csv`. Its movements are dated 2026-10-20, so an `on_demand` run over that date shows reconciled rows, amount differences and missing entries.
 
-En S3 (`<rango>` es `fecha_inicio_fecha_fin`):
+## What it writes
 
-| Prefijo | `daily` / `on_demand` | `feed` |
+To S3 (`<rango>` is `fecha_inicio_fecha_fin`, and keeps its Spanish name because it is part of the object key layout):
+
+| Prefix | `daily` / `on_demand` | `feed` |
 |---|---|---|
-| `raw/` | `raw/proveedor/<rango>/<run_id>.json`: respuesta del proveedor | `raw/feed/<fecha>/<run_id>-<archivo>`: copia del archivo original |
-| `data/` | `data/conciliaciones/<rango>/<run_id>.json`: resultado por transacción | `data/movimientos/<fecha>/<run_id>.json`: movimientos normalizados |
-| `reports/` | `reports/<rango>/<run_id>.json`: reporte de conciliación | — |
-| `logs/` | `logs/<modo>/<fecha>/<run_id>.json`: resumen de la ejecución | igual |
+| `raw/` | `raw/proveedor/<rango>/<run_id>.json`: provider response | `raw/feed/<fecha>/<run_id>-<archivo>`: copy of the original file |
+| `data/` | `data/conciliaciones/<rango>/<run_id>.json`: per-transaction result | `data/movimientos/<fecha>/<run_id>.json`: normalised movements |
+| `reports/` | `reports/<rango>/<run_id>.json`: reconciliation report | — |
+| `logs/` | `logs/<modo>/<fecha>/<run_id>.json`: run summary | same |
 
-En PostgreSQL (las tablas se crean si no existen):
+To PostgreSQL (tables are created if they do not exist):
 
-- `conciliaciones`: una fila por cada conciliación (`daily` / `on_demand`).
-- `movimientos`: una fila por cada movimiento cargado por `feed`.
+- `conciliaciones`: one row per reconciliation (`daily` / `on_demand`).
+- `movimientos`: one row per movement loaded by `feed`.
 
-## Logs y códigos de salida
+## Logs and exit codes
 
-Escribe logs en JSON, una línea por evento, a stdout.
+It writes JSON logs, one line per event, to stdout.
 
-| Código | Significado |
+| Code | Meaning |
 |---|---|
-| `0` | Ejecución correcta |
-| `1` | Error inesperado |
-| `2` | Configuración inválida (falta una variable o tiene un valor no permitido) |
-| `3` | Entrada inválida (`PAYLOAD` o archivo de feed) |
-| `4` | Falla de una dependencia (S3, base de datos o proveedor) |
+| `0` | Successful run |
+| `1` | Unexpected error |
+| `2` | Invalid configuration (a variable is missing or has a disallowed value) |
+| `3` | Invalid input (`PAYLOAD` or feed file) |
+| `4` | Dependency failure (S3, database or provider) |
 
-## Ejecutarla localmente contra Floci
+## Running it locally against Floci
 
-Requiere Floci levantado y `bootstrap-floci/` aplicado (ver el README de la raíz).
+Requires Floci running and `bootstrap-floci/` applied (see the README at the repository root).
 
 ```bash
 docker build -t conciliacion-batch:local app/
@@ -88,9 +92,9 @@ docker run --rm --network conciliacion-batch \
   -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_REGION=us-east-1 \
   -e RUN_MODE=on_demand \
   -e PAYLOAD='{"fecha_inicio": "2026-10-20", "fecha_fin": "2026-10-20"}' \
-  -e BUCKET_NAME=<tu-bucket> \
+  -e BUCKET_NAME=<your-bucket> \
   -e DB_HOST=floci -e DB_PORT=7001 -e DB_NAME=conciliacion \
-  -e DB_USER=conciliacion_admin -e DB_PASSWORD=<password-del-secreto> \
-  -e PROVIDER_API_KEY=cualquier-valor \
+  -e DB_USER=conciliacion_admin -e DB_PASSWORD=<password-from-the-secret> \
+  -e PROVIDER_API_KEY=any-value \
   conciliacion-batch:local
 ```

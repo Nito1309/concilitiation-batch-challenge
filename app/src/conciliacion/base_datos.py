@@ -1,4 +1,4 @@
-"""Acceso a PostgreSQL."""
+"""PostgreSQL access."""
 
 from datetime import date
 

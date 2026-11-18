@@ -6,7 +6,7 @@ locals {
   azs = slice(data.aws_availability_zones.available.names, 0, 2)
 }
 
-# --- Red ---------------------------------------------------------------------
+# --- Network -----------------------------------------------------------------
 
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
@@ -89,11 +89,11 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# --- Base de datos -----------------------------------------------------------
+# --- Database ----------------------------------------------------------------
 
 resource "aws_security_group" "db" {
   name        = "${var.name}-db"
-  description = "Base de datos PostgreSQL"
+  description = "PostgreSQL database"
   vpc_id      = aws_vpc.this.id
 
   tags = { Name = "${var.name}-db" }
@@ -126,7 +126,7 @@ resource "aws_db_instance" "this" {
 
 resource "aws_secretsmanager_secret" "db" {
   name                    = "${var.name}/db-credentials"
-  description             = "Credenciales de la base de datos PostgreSQL"
+  description             = "PostgreSQL database credentials"
   recovery_window_in_days = 0
 }
 
